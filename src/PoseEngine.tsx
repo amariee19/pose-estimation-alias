@@ -14,7 +14,7 @@ const PoseEngine = () => {
     if (isTracking.current) {
       isTracking.current = false;
       // To stop camera
-      const stream = videoRef.current.srcObject as MediaStream; //Get the stream. MediaStream is the type bc it's the
+      const stream = videoRef.current.srcObject as MediaStream; //Get the stream. MediaStream is the type bc getUseMedia always returns it
       stream.getTracks().forEach((track) => track.stop()); // Get each track on the stream(audio and video) and stop
       videoRef.current.srcObject = null; //cleanup
       setIsPredicting(false);
