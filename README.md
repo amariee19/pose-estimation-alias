@@ -1,76 +1,40 @@
-# pose-estimation-alias
-Third attempt at reproducing the repo
+# PoseEngine: Skeleton-Based Fall Detection
 
-# React + TypeScript + Vite
+A practical, real-time fall detection system built for indoor environments. This project prioritizes **user privacy** and **computational efficiency** by utilizing handcrafted features extracted from human pose landmarks rather than raw video storage.
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+## 🚀 The Vision
 
-Currently, two official plugins are available:
+Inspired by recent research into "Practical Application of Skeleton-based FDD," this project moves the intelligence to the "Edge" (the browser). By converting video to coordinates locally, we ensure that sensitive visual data never leaves the user's device.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## 🛠 Tech Stack
 
-## React Compiler
+  * **Frontend:** React.js + TypeScript
+  * **Pose Estimation:** [MediaPipe Pose](https://www.google.com/search?q=https://google.github.io/mediapipe/solutions/pose.html)
+  * **Styling:** Tailwind CSS
+  * **Backend: ** Connected to the main AAL system; NodeJS + Express
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## 📊 Handcrafted Features
 
-## Expanding the ESLint configuration
+Rather than using "black-box" Deep Learning, the system uses specific mathematical heuristics to identify falls:
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+  * **Vertical Displacement ($\Delta y$):** Monitoring the sudden drop of the **Mid-Hip** (Center of Mass) and **Nose** landmarks.
+  * **Height-Collapse Ratio:** Comparing current Nose-to-Ankle distance against an initial standing baseline.
+  * **Velocity Thresholds:** Calculating pixels-per-frame movement to distinguish between a fall and a controlled "Activities of Daily Living" (ADL) such as sitting.
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+## 🔒 Privacy & Performance
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+  * **No Video Storage:** Frames are processed in RAM and discarded immediately.
+  * **Low Latency:** Heuristic math runs in $O(1)$ time complexity once landmarks are extracted.
+  * **Offline Capable:** The core detection engine requires no active internet connection once the MediaPipe models are cached.
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+## 🏗️ Getting Started
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+1.  Clone the repo: `git clone [your-repo-link]`
+2.  Install dependencies: `npm install`
+3.  Run the development server: `npm run dev`
+4.  Click **"Enable Prediction"** to begin the tracking engine.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+-----
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+
+
