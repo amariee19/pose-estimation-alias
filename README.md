@@ -9,7 +9,7 @@ A real-time fall-detection system for the elderly. This is the second module of 
 ## 🛠 Tech Stack
 
   * **Frontend:** React.js + TypeScript
-  * **Pose Estimation:** [MediaPipe Pose](https://www.google.com/search?q=https://google.github.io/mediapipe/solutions/pose.html)
+  * **Pose Estimation:** [MediaPipe Pose](https://www.google.com/search?q=https://google.github.io/mediapipe/solutions/pose.html). Model: Full
   * **Styling:** Tailwind CSS
   * **Backend: ** Connected to the main AAL system; NodeJS + Express
 
