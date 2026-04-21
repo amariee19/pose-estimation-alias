@@ -4,7 +4,7 @@ A practical, real-time fall detection system built for indoor environments. This
 
 ## 🚀 The Vision
 
-Inspired by recent research into "Practical Application of Skeleton-based FDD," this project moves the intelligence to the "Edge" (the browser). By converting video to coordinates locally, we ensure that sensitive visual data never leaves the user's device.
+A real-time fall-detection system for the elderly. This is the second module of the five module Ambient Assisted Living (AAL) system for the elderly.
 
 ## 🛠 Tech Stack
 
@@ -29,7 +29,7 @@ Rather than using "black-box" Deep Learning, the system uses specific mathematic
 
 ## 🏗️ Getting Started
 
-1.  Clone the repo: `git clone [your-repo-link]`
+1.  Clone the repo: `git clone https://github.com/amariee19/pose-estimation-alias.git`
 2.  Install dependencies: `npm install`
 3.  Run the development server: `npm run dev`
 4.  Click **"Enable Prediction"** to begin the tracking engine.
