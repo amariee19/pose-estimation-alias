@@ -42,8 +42,8 @@ interface landmark {
   headAngle:         1,
 };
 
-const MAX_SCORE_PER_FRAME = Object.values(FEATURE_WEIGHTS).reduce((a, b) => a + b, 0); // = 8
-const MAX_BUFFER_SCORE = MAX_SCORE_PER_FRAME * BUFFER_SIZE; // = 160
+const MAX_SCORE_PER_FRAME = Object.values(FEATURE_WEIGHTS).reduce((a, b) => a + b, 0); // = 11; reduce acts as a sum where zero is a and the values in the array are b
+const MAX_BUFFER_SCORE = MAX_SCORE_PER_FRAME * BUFFER_SIZE; // = 220
 const FALL_THRESHOLD = 0.6;
 // Feature extraction formulas:
 // Clamp cosine to [-1, 1] to prevent floating point errors, then convert to degrees. can return null because magA or magB can be 0 and so return null
@@ -124,17 +124,21 @@ const buildFrameVote = (features: FallFeatures): FrameVote => ({
     noseAnkleDistance: features.noseAnkleDistance < 0.3,
     aspectRatio: (features.aspectRatio) > 1.0
 });
+
+// scoreFrame calculates the vote per frame depending on each feature
 const scoreFrame = (vote: FrameVote): number =>
   (Object.keys(FEATURE_WEIGHTS) as Array<keyof FrameVote>).reduce(
     (total, key) => total + (vote[key] ? FEATURE_WEIGHTS[key] : 0),
     0
   );
 
+//   buffer.length is the total number of frames.
+// evealuateBuffer determines the total number of votes across n number of frames
   const evaluateBuffer = (
   buffer: FrameVote[]
 ): { isFall: boolean; confidence: number } => {
   if (buffer.length === 0) return { isFall: false, confidence: 0 };
-  const bufferScore = buffer.reduce((total, frame) => total + scoreFrame(frame), 0);//check out
+  const bufferScore = buffer.reduce((total, frame) => total + scoreFrame(frame), 0);
   const confidence = bufferScore / MAX_BUFFER_SCORE;
   return { isFall: confidence >= FALL_THRESHOLD, confidence };
 };
