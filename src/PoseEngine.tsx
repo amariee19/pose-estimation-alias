@@ -104,7 +104,6 @@ const calculateNoseAnkleDistance = (nose: landmark, avgAnkle: landmark): number 
 };
 
 // Ratio of body width to height — large value means body is wider than tall, indicating a fall
-// Ratio of body width to height — large value means body is wider than tall, indicating a fall
 const bodyAspectRatio = (
   leftAnkle: landmark,
   rightShoulder: landmark,
@@ -135,7 +134,7 @@ const scoreFrame = (vote: FrameVote): number =>
   buffer: FrameVote[]
 ): { isFall: boolean; confidence: number } => {
   if (buffer.length === 0) return { isFall: false, confidence: 0 };
-  const bufferScore = buffer.reduce((total, frame) => total + scoreFrame(frame), 0);
+  const bufferScore = buffer.reduce((total, frame) => total + scoreFrame(frame), 0);//check out
   const confidence = bufferScore / MAX_BUFFER_SCORE;
   return { isFall: confidence >= FALL_THRESHOLD, confidence };
 };
@@ -247,6 +246,7 @@ const PoseEngine = () => {
         aspectRatio: bodyAspectRatio(leftAnkle, rightShoulder, nose, avgHeel)
 
       };
+      
 
       // Step 1 — convert features to a frame vote
 const vote = buildFrameVote(extractedFeatures);
@@ -259,6 +259,20 @@ if (frameBufferRef.current.length > 20) {
 
 // Step 3 — evaluate the buffer (you'll write this next)
 const { isFall, confidence: currentConfidence } = evaluateBuffer(frameBufferRef.current);
+
+
+// Debug: log feature values and whether each threshold fired
+console.table({
+  torsoLegAngle: { value: extractedFeatures.torsoLegAngle?.toFixed(2),    fired: vote.torsoLegAngle },
+  kneeAnkle:     { value: extractedFeatures.kneeAnkleDistance.toFixed(3), fired: vote.kneeAnkleDistance },
+  headFloor:     { value: extractedFeatures.headFloorDistance.toFixed(3), fired: vote.headFloorDistance },
+  headAngle:     { value: extractedFeatures.headAngle.toFixed(1),         fired: vote.headAngle },
+  noseAnkle:     { value: extractedFeatures.noseAnkleDistance.toFixed(3), fired: vote.noseAnkleDistance },
+  aspectRatio:   { value: extractedFeatures.aspectRatio.toFixed(3),       fired: vote.aspectRatio },
+  confidence:    { value: (currentConfidence * 100).toFixed(1) + "%",     fired: isFall },
+});
+
+
 setFallDetected(isFall);
 setConfidence(currentConfidence);
     }
@@ -273,15 +287,15 @@ setConfidence(currentConfidence);
 setFallDetected(false);
 setConfidence(0);
       // To stop camera
-      if (videoRef.current?.srcObject) {
-        const stream = videoRef.current.srcObject as MediaStream; //Get the stream. MediaStream is the type bc getUseMedia always returns it
-        stream.getTracks().forEach((track) => track.stop()); // Get each track on the stream(audio and video) and stop
-        videoRef.current.srcObject = null; //cleanup
-      }
-      const canvasCtx = canvasRef.current?.getContext("2d");
-      if (canvasCtx) {
-        clearCanvas(canvasCtx);
-      }
+    //   if (videoRef.current?.srcObject) {
+    //     const stream = videoRef.current.srcObject as MediaStream; //Get the stream. MediaStream is the type bc getUseMedia always returns it
+    //     stream.getTracks().forEach((track) => track.stop()); // Get each track on the stream(audio and video) and stop
+    //     videoRef.current.srcObject = null; //cleanup
+    //   }
+    //   const canvasCtx = canvasRef.current?.getContext("2d");
+    //   if (canvasCtx) {
+    //     clearCanvas(canvasCtx);
+    //   }
 
       setIsPredicting(false);
     } else {
@@ -334,15 +348,16 @@ setConfidence(0);
           <h2 className="text-center text-blue-400 font-mono">
             Pose Engine Ready ...
           </h2>
-          {fallDetected && (
+        
+<div className="text-xs text-white font-mono bg-gray-900 px-3 py-1">
+  Confidence: {Math.round(confidence * 100)}% | 
+  Buffer: {frameBufferRef.current.length}/{BUFFER_SIZE}
+    {fallDetected && (
   <div className="bg-red-600 text-white text-center py-2 font-bold text-lg">
     ⚠️ FALL DETECTED — Confidence: {Math.round(confidence * 100)}%
   </div>
   
 )}
-<div className="text-xs text-white font-mono bg-gray-900 px-3 py-1">
-  Confidence: {Math.round(confidence * 100)}% | 
-  Buffer: {frameBufferRef.current.length}/{BUFFER_SIZE}
 </div>
         </div>
         {/* Container for video and canvas */}
