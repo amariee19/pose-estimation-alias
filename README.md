@@ -1,40 +1,76 @@
-# PoseEngine: Skeleton-Based Fall Detection
 
-A practical, real-time fall detection system built for indoor environments. This project prioritizes **user privacy** and **computational efficiency** by utilizing handcrafted features extracted from human pose landmarks rather than raw video storage.
+---
 
-## 🚀 The Vision
+# PoseEngine — Skeleton-Based Fall Detection (Module II)
 
-A real-time fall-detection system for the elderly. This is the second module of the five module Ambient Assisted Living (AAL) system for the elderly.
+This document details the architecture and logic flow of the **PoseEngine**, a module within the **Ambient Assisted Living (AAL)** ecosystem designed for elderly monitoring.
 
-## 🛠 Tech Stack
+---
 
-  * **Frontend:** React.js + TypeScript
-  * **Pose Estimation:** [MediaPipe Pose](https://www.google.com/search?q=https://google.github.io/mediapipe/solutions/pose.html). Model: Full
-  * **Styling:** Tailwind CSS
-  * **Backend: ** Connected to the main AAL system; NodeJS + Express
+## 1. System Overview
 
-## 📊 Handcrafted Features
+PoseEngine is a privacy-first, real-time fall detection system. It abstracts human movement into lightweight skeletal landmarks, moving the "intelligence" to the edge (client-side) to eliminate invasive video storage.
 
-Rather than using "black-box" Deep Learning, the system uses specific mathematical heuristics to identify falls:
+- **Frontend**: React 18 (TypeScript) + Vite
+- **Engine**: MediaPipe Pose (BlazePose GHUM Hybrid)
+- **Logic**: Handcrafted kinematic heuristics
+- **Optimization**: Dynamic buffer thresholding
 
-  * **Vertical Displacement ($\Delta y$):** Monitoring the sudden drop of the **Mid-Hip** (Center of Mass) and **Nose** landmarks.
-  * **Height-Collapse Ratio:** Comparing current Nose-to-Ankle distance against an initial standing baseline.
-  * **Velocity Thresholds:** Calculating pixels-per-frame movement to distinguish between a fall and a controlled "Activities of Daily Living" (ADL) such as sitting.
+---
 
-## 🔒 Privacy & Performance
+## 2. Detection Pipeline
 
-  * **No Video Storage:** Frames are processed in RAM and discarded immediately.
-  * **Low Latency:** Heuristic math runs in $O(1)$ time complexity once landmarks are extracted.
-  * **Offline Capable:** The core detection engine requires no active internet connection once the MediaPipe models are cached.
+The system interprets movement through a multi-stage pipeline that ensures data is processed and discarded in real-time.
 
-## 🏗️ Getting Started
+### The Logic Flow:
+1.  **Extraction**: MediaPipe identifies 33 key body landmarks from the video stream.
+2.  **Transformation**: Raw coordinates are converted into relative distances and angular velocities.
+3.  **Voting**: Each frame is evaluated against specific handcrafted features (e.g., Vertical Displacement, Height-Collapse).
+4.  **Temporal Analysis**: A sliding window buffer aggregates these "votes" to ensure the movement is a sustained fall rather than a momentary sensor glitch.
+5.  **State Management**: If the confidence threshold is crossed, a fall state is triggered.
 
-1.  Clone the repo: `git clone https://github.com/amariee19/pose-estimation-alias.git`
-2.  Install dependencies: `npm install`
-3.  Run the development server: `npm run dev`
-4.  Click **"Enable Prediction"** to begin the tracking engine.
+---
 
------
+## 3. Handcrafted Feature Matrix
 
+The engine uses human-defined heuristics to distinguish a fall from Activities of Daily Living (ADL):
 
+| Feature | Description | Sensitivity |
+| :--- | :--- | :--- |
+| **Vertical Displacement ($\Delta y$)** | Tracks the sudden drop of the **Mid-Hip** (Center of Mass) relative to an initial baseline. | High |
+| **Height-Collapse Ratio** | Monitors the vertical distance between the **Nose** and **Ankles** to detect a "crumbling" posture. | Medium |
+| **Kinetic Velocity** | Measures the acceleration of the head and torso to capture the "impact" signature. | High |
+
+---
+
+## 4. Privacy & Performance
+
+### Privacy-by-Design
+* **Zero-Persistence**: All video frames are processed in volatile RAM and discarded instantly.
+* **Abstract Output**: The system only outputs coordinate vectors, ensuring the user’s visual identity is never stored or transmitted.
+
+### Performance Optimization
+* **$O(1)$ Logic**: Handcrafted math ensures the detection logic adds near-zero overhead to the pose estimation.
+* **Asynchronous Processing**: By decoupling the detection engine from the React render cycle, the app maintains a consistent 30+ FPS on consumer-grade hardware.
+
+---
+
+## 5. Development Status
+
+- [x] Initial MediaPipe Integration (Full Model)
+- [x] Handcrafted Feature Engine (Base Heuristics)
+- [ ] **Dynamic Buffer Implementation**: Refactoring the threshold logic to use quadratic growth patterns, improving accuracy across variable camera distances.
+- [ ] Module III Integration (Emergency Alert Trigger)
+
+---
+
+## 6. Setup
+
+```bash
+git clone https://github.com/amariee19/pose-estimation-alias.git
+npm install
+npm run dev
+```
+
+---
 
