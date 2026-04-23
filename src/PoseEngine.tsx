@@ -136,13 +136,11 @@ const bodyAspectRatio = (
 };
 
 const buildFrameVote = (features: FallFeatures): FrameVote => ({
-  torsoLegAngle:
-    (features.torsoLegAngle ?? 180) >= 70 &&
-    (features.torsoLegAngle ?? 180) <= 110,
-  kneeAnkleDistance: (features.kneeAnkleDistance ?? 1) < 0.05,
-  headFloorDistance: (features.headFloorDistance ?? 1) < 0.15,
+  torsoLegAngle: ((features.torsoLegAngle ?? 180) >= 70 && (features.torsoLegAngle ?? 180) <= 110) || (features.torsoLegAngle ?? 180) < 30,
+  kneeAnkleDistance: (features.kneeAnkleDistance ?? 1) < 0.25,
+  headFloorDistance: (features.headFloorDistance ?? 1) < 0.4,
   headAngle: features.headAngle < 45 || features.headAngle > 135,
-  noseAnkleDistance: features.noseAnkleDistance < 0.3,
+  noseAnkleDistance: features.noseAnkleDistance < 1.5,
   aspectRatio: features.aspectRatio > 1.0,
 });
 
