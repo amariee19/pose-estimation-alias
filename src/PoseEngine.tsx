@@ -5,7 +5,7 @@ import {
 } from "@mediapipe/tasks-vision";
 import { useEffect, useRef, useState } from "react";
 
-// Types
+// ── Types ─────────────────────────────────────────────────────
 interface landmark {
   x: number;
   y: number;
@@ -31,17 +31,18 @@ interface FrameVote {
   aspectRatio: boolean;
 }
 
+// ── Constants ─────────────────────────────────────────────────
 const MIN_BUFFER = 8;
 const MAX_BUFFER = 40;
-
 const FALL_THRESHOLD = 0.6;
+const WS_URL = "ws://10.0.1.25:8080"; // ← replace with your PC's IP
 
 const getDynamicBufferSize = (confidence: number): number => {
-  const t = Math.min(1, confidence / FALL_THRESHOLD); // normalises confidence to 0–1
-  const size = MIN_BUFFER + (MAX_BUFFER - MIN_BUFFER) * (t * t); // quadratic growth
+  const t = Math.min(1, confidence / FALL_THRESHOLD);
+  const size = MIN_BUFFER + (MAX_BUFFER - MIN_BUFFER) * (t * t);
   return Math.round(size);
 };
-//  Weights which per each feature based on their importance. for typing, object where key is type FrameVote and value is of type number
+
 const FEATURE_WEIGHTS: Record<keyof FrameVote, number> = {
   torsoLegAngle: 3,
   headFloorDistance: 2,
@@ -54,12 +55,9 @@ const FEATURE_WEIGHTS: Record<keyof FrameVote, number> = {
 const MAX_SCORE_PER_FRAME = Object.values(FEATURE_WEIGHTS).reduce(
   (a, b) => a + b,
   0,
-); // = 11; reduce acts as a sum where zero is a and the values in the array are b
+);
 
-// Feature extraction formulas:
-// Clamp cosine to [-1, 1] to prevent floating point errors, then convert to degrees. can return null because magA or magB can be 0 and so return null
-//Angle between torso (shoulder→hip) and leg (hip→knee) vectors — fall range: 70°–110°
-
+// ── Feature calculations ──────────────────────────────────────
 const calculateTorsoLegAngle = (
   shoulder: landmark,
   hip: landmark,
@@ -69,48 +67,27 @@ const calculateTorsoLegAngle = (
   const ay = hip.y - shoulder.y;
   const bx = knee.x - hip.x;
   const by = knee.y - hip.y;
-
   const dot = ax * bx + ay * by;
   const magA = Math.sqrt(ax * ax + ay * ay);
   const magB = Math.sqrt(bx * bx + by * by);
-
   if (magA === 0 || magB === 0) return null;
   const cosAngle = Math.min(1, Math.max(-1, dot / (magA * magB)));
   return (Math.acos(cosAngle) * 180) / Math.PI;
 };
 
-// Vertical distance between knee and ankle — small value means legs are flat/collapsed
 const calculateKneeAnkleDistance = (
   avgKnee: landmark,
   avgAnkle: landmark,
-): number => {
-  return Math.abs(avgKnee.y - avgAnkle.y);
-};
+): number => Math.abs(avgKnee.y - avgAnkle.y);
 
-// Vertical distance between nose and heel — small value means head is near the ground
 const calculateHeadFloorDistance = (
   nose: landmark,
   avgHeel: landmark,
-): number => {
-  return Math.abs(nose.y - avgHeel.y);
-};
-// not totally reliable: check the nose and shoulder y landmarks on vertical and horizontal orientation
-// const calculateUpperBodyAlignment = (
-//   nose: landmark,
-//   avgShoulder: landmark,
-// ) => {
-//     return avgShoulder.y <= nose.y;
-// };
+): number => Math.abs(nose.y - avgHeel.y);
 
-// Tilt angle of head relative to shoulders — changes dramatically when fallen
-const calculateHeadAngle = (nose: landmark, avgShoulder: landmark): number => {
-  // angle = arctan((nose.y - shoulder.y) / (nose.x - shoulder.x)) × (180 / π)
-  return (
-    (Math.atan2(nose.y - avgShoulder.y, nose.x - avgShoulder.x) * 180) / Math.PI
-  );
-};
+const calculateHeadAngle = (nose: landmark, avgShoulder: landmark): number =>
+  (Math.atan2(nose.y - avgShoulder.y, nose.x - avgShoulder.x) * 180) / Math.PI;
 
-// 3D distance from nose to ankle — collapses when body goes from vertical to horizontal
 const calculateNoseAnkleDistance = (
   nose: landmark,
   avgAnkle: landmark,
@@ -118,11 +95,9 @@ const calculateNoseAnkleDistance = (
   const dx = nose.x - avgAnkle.x;
   const dy = nose.y - avgAnkle.y;
   const dz = nose.z - avgAnkle.z;
-
   return Math.sqrt(dx * dx + dy * dy + dz * dz);
 };
 
-// Ratio of body width to height — large value means body is wider than tall, indicating a fall
 const bodyAspectRatio = (
   leftAnkle: landmark,
   rightShoulder: landmark,
@@ -136,7 +111,10 @@ const bodyAspectRatio = (
 };
 
 const buildFrameVote = (features: FallFeatures): FrameVote => ({
-  torsoLegAngle: ((features.torsoLegAngle ?? 180) >= 70 && (features.torsoLegAngle ?? 180) <= 110) || (features.torsoLegAngle ?? 180) < 30,
+  torsoLegAngle:
+    ((features.torsoLegAngle ?? 180) >= 70 &&
+      (features.torsoLegAngle ?? 180) <= 110) ||
+    (features.torsoLegAngle ?? 180) < 30,
   kneeAnkleDistance: (features.kneeAnkleDistance ?? 1) < 0.25,
   headFloorDistance: (features.headFloorDistance ?? 1) < 0.4,
   headAngle: features.headAngle < 45 || features.headAngle > 135,
@@ -144,23 +122,12 @@ const buildFrameVote = (features: FallFeatures): FrameVote => ({
   aspectRatio: features.aspectRatio > 1.0,
 });
 
-// scoreFrame calculates the vote per frame depending on each feature
 const scoreFrame = (vote: FrameVote): number =>
   (Object.keys(FEATURE_WEIGHTS) as Array<keyof FrameVote>).reduce(
     (total, key) => total + (vote[key] ? FEATURE_WEIGHTS[key] : 0),
     0,
   );
 
-//   buffer.length is the total number of frames.
-// evaluateBuffer determines the total number of votes across n number of frames
-//   const evaluateBuffer = (
-//   buffer: FrameVote[]
-// ): { isFall: boolean; confidence: number } => {
-//   if (buffer.length === 0) return { isFall: false, confidence: 0 };
-//   const bufferScore = buffer.reduce((total, frame) => total + scoreFrame(frame), 0);
-//   const confidence = bufferScore / MAX_BUFFER_SCORE;
-//   return { isFall: confidence >= FALL_THRESHOLD, confidence };
-// };
 const evaluateBuffer = (
   buffer: FrameVote[],
 ): { isFall: boolean; confidence: number } => {
@@ -169,211 +136,176 @@ const evaluateBuffer = (
     (total, frame) => total + scoreFrame(frame),
     0,
   );
-  const confidence = bufferScore / (MAX_SCORE_PER_FRAME * buffer.length); // ✅ dynamic
+  const confidence = bufferScore / (MAX_SCORE_PER_FRAME * buffer.length);
   return { isFall: confidence >= FALL_THRESHOLD, confidence };
 };
 
+// ── Component ─────────────────────────────────────────────────
 const PoseEngine = () => {
-  const [isPredicting, setIsPredicting] = useState(false); //isPredicting is the state that sets
+  const [isPredicting, setIsPredicting] = useState(false);
   const [confidence, setConfidence] = useState(0);
   const [fallDetected, setFallDetected] = useState(false);
+  const [hardwareAlert, setHardwareAlert] = useState(false); // ← new: tracks ESP32 alert
+  const [wsStatus, setWsStatus] = useState<"connecting" | "connected" | "disconnected">("disconnected");
 
-  // We use useref for the video and canvas elements because they change in each frame and we don't want it to trigger a rerender
-  const videoRef = useRef<HTMLVideoElement | null>(null); //holds reference to actual video DOM element
-  const canvasRef = useRef<HTMLCanvasElement | null>(null); //holds reference to actual canvas DOM element
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const poseLandmarkerRef = useRef<PoseLandmarker | null>(null);
   const isTracking = useRef(false);
+  const frameBufferRef = useRef<FrameVote[]>([]);
+  const targetSizeRef = useRef(MIN_BUFFER);
 
-  //   const prevFrameRef = useRef<PrevFrameData | null>(null);
-  const frameBufferRef = useRef<FrameVote[]>([]); //array that stores the n frame votes
-  const targetSizeRef = useRef(MIN_BUFFER); //holds the target size of the dynamic buffer
-  //   Clears the canvas/skeleton
   const clearCanvas = (ctx: CanvasRenderingContext2D) => {
     ctx.clearRect(0, 0, canvasRef.current!.width, canvasRef.current!.height);
   };
 
-  const predictFall = () => {
-    console.log("predictFall called, isTracking:", isTracking.current);
-    if (!isTracking.current) return;
-    // we can change the values of videoRef and canvasRef in this function because it would be changed on an event
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    const poseLandmarker = poseLandmarkerRef.current;
-
-    if (!video || !canvas || !poseLandmarker) {
-      console.log("missing ref:", { video, canvas, poseLandmarker });
-      return;
-    }
-
-    // check if canvas width and video width are unequal, if so, change
-
-    if (canvas.width !== video.videoWidth) {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-    }
-
-    const startTimeMs = performance.now();
-    const poseLandmarkerResults = poseLandmarker.detectForVideo(
-      video,
-      startTimeMs,
-    );
-    const canvasCtx = canvas.getContext("2d");
-    if (canvasCtx) {
-      // canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
-      clearCanvas(canvasCtx);
-      const drawingUtils = new DrawingUtils(canvasCtx);
-      if (poseLandmarkerResults.landmarks) {
-        // landmarks are for canvas: relative based on camera
-        for (const landmarks of poseLandmarkerResults.landmarks) {
-          drawingUtils.drawConnectors(
-            landmarks,
-            PoseLandmarker.POSE_CONNECTIONS,
-          );
-          //    drawingUtils.drawLandmarks(landmarks);
-          drawingUtils.drawLandmarks(landmarks, {
-            radius: (data) => DrawingUtils.lerp(data.from!.z, -0.15, 0.1, 5, 1),
-          });
-        }
+  // ── Start camera & prediction ────────────────────────────
+  const startPrediction = async () => {
+    if (isTracking.current) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.onloadeddata = () => {
+          videoRef.current!.play();
+          isTracking.current = true;
+          setIsPredicting(true);
+          predictFall();
+        };
       }
+    } catch (error) {
+      console.error("Error accessing webcam:", error);
     }
+  };
 
-    // use world landmarks for fall detection: real-world 3d coordinates in meters. uses hips as center. MAKE SURE HIPS ARE SEEN
-    //is their array empty?
-    if (poseLandmarkerResults.worldLandmarks?.length > 0) {
-      const wl = poseLandmarkerResults.worldLandmarks[0];
-
-      // parts used in detection
-      const nose = wl[0];
-      const leftShoulder = wl[11];
-      const rightShoulder = wl[12];
-      const leftHip = wl[23];
-      const rightHip = wl[24];
-      const leftKnee = wl[25];
-      const rightKnee = wl[26];
-      const leftAnkle = wl[27];
-      const rightAnkle = wl[28];
-      const leftHeel = wl[29];
-      const rightHeel = wl[30];
-
-      // calculate average: implicit return
-      const avg = (a: landmark, b: landmark) => ({
-        x: (a.x + b.x) / 2,
-        y: (a.y + b.y) / 2,
-        z: (a.z + b.z) / 2,
-      });
-
-      const avgShoulder = avg(leftShoulder, rightShoulder);
-      const avgHip = avg(leftHip, rightHip);
-      const avgKnee = avg(leftKnee, rightKnee);
-      const avgAnkle = avg(leftAnkle, rightAnkle);
-      const avgHeel = avg(leftHeel, rightHeel);
-
-      const extractedFeatures: FallFeatures = {
-        torsoLegAngle: calculateTorsoLegAngle(avgShoulder, avgHip, avgKnee),
-        kneeAnkleDistance: calculateKneeAnkleDistance(avgKnee, avgAnkle),
-        headFloorDistance: calculateHeadFloorDistance(nose, avgHeel),
-        headAngle: calculateHeadAngle(nose, avgShoulder),
-        noseAnkleDistance: calculateNoseAnkleDistance(nose, avgAnkle),
-        aspectRatio: bodyAspectRatio(leftAnkle, rightShoulder, nose, avgHeel),
-      };
-
-      //   Step 1 — convert features to a frame vote
-      const vote = buildFrameVote(extractedFeatures);
-
-      // 2. push vote into buffer
-      frameBufferRef.current.push(vote);
-
-      // 3. get target size based on PREVIOUS confidence (from state)
-      const targetSize = getDynamicBufferSize(confidence); // ✅ uses React state from last frame
-      targetSizeRef.current = targetSize;
-      while (frameBufferRef.current.length > targetSize) {
-        frameBufferRef.current.shift();
-      }
-
-      // 4. now evaluate the trimmed buffer
-      const { isFall, confidence: currentConfidence } = evaluateBuffer(
-        frameBufferRef.current,
-      );
-
-      // Debug: log feature values and whether each threshold fired
-      console.table({
-        torsoLegAngle: {
-          value: extractedFeatures.torsoLegAngle?.toFixed(2),
-          fired: vote.torsoLegAngle,
-        },
-        kneeAnkle: {
-          value: extractedFeatures.kneeAnkleDistance.toFixed(3),
-          fired: vote.kneeAnkleDistance,
-        },
-        headFloor: {
-          value: extractedFeatures.headFloorDistance.toFixed(3),
-          fired: vote.headFloorDistance,
-        },
-        headAngle: {
-          value: extractedFeatures.headAngle.toFixed(1),
-          fired: vote.headAngle,
-        },
-        noseAnkle: {
-          value: extractedFeatures.noseAnkleDistance.toFixed(3),
-          fired: vote.noseAnkleDistance,
-        },
-        aspectRatio: {
-          value: extractedFeatures.aspectRatio.toFixed(3),
-          fired: vote.aspectRatio,
-        },
-        confidence: {
-          value: (currentConfidence * 100).toFixed(1) + "%",
-          fired: isFall,
-        },
-      });
-
-      setFallDetected(isFall);
-      setConfidence(currentConfidence);
+  // ── Stop camera & prediction ─────────────────────────────
+  const stopPrediction = () => {
+    isTracking.current = false;
+    frameBufferRef.current = [];
+    setFallDetected(false);
+    setHardwareAlert(false);
+    setConfidence(0);
+    if (videoRef.current?.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream;
+      stream.getTracks().forEach((track) => track.stop());
+      videoRef.current.srcObject = null;
     }
-
-    window.requestAnimationFrame(predictFall);
+    const canvasCtx = canvasRef.current?.getContext("2d");
+    if (canvasCtx) clearCanvas(canvasCtx);
+    targetSizeRef.current = MIN_BUFFER;
+    setIsPredicting(false);
   };
 
   const handleButtonPress = async () => {
     if (isTracking.current) {
-      isTracking.current = false;
-      frameBufferRef.current = [];
-      setFallDetected(false);
-      setConfidence(0);
-      //   To stop camera
-      if (videoRef.current?.srcObject) {
-        const stream = videoRef.current.srcObject as MediaStream; //Get the stream. MediaStream is the type bc getUseMedia always returns it
-        stream.getTracks().forEach((track) => track.stop()); // Get each track on the stream(audio and video) and stop
-        videoRef.current.srcObject = null; //cleanup
-      }
-      const canvasCtx = canvasRef.current?.getContext("2d");
-      if (canvasCtx) {
-        clearCanvas(canvasCtx);
-      }
-      targetSizeRef.current = MIN_BUFFER;
-      setIsPredicting(false);
+      stopPrediction();
     } else {
-      try {
-        // to access the webcam:
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-        }); //getUserMedia({video:true}) is what asks user for permission to use webcam
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          console.log("srcObject set");
-          videoRef.current.onloadeddata = () => {
-            console.log("onloadeddata fired");
-            videoRef.current!.play();
-            isTracking.current = true;
-            setIsPredicting(true);
-            predictFall();
-          };
-        }
-      } catch (error) {
-        console.error("Error accessing webcam: ", error);
-      }
+      await startPrediction();
     }
   };
+
+  // ── WebSocket connection to relay server ─────────────────
+  // ── WebSocket connection to relay server ─────────────────
+  useEffect(() => {
+    let ws: WebSocket | null = null;
+    let reconnectTimeout: ReturnType<typeof setTimeout>;
+
+    const connect = () => {
+      console.log("Attempting to connect to WebSocket...");
+      setWsStatus("connecting");
+      
+      ws = new WebSocket(WS_URL);
+
+      ws.onopen = () => {
+        console.log("✅ WebSocket connected to relay server");
+        setWsStatus("connected");
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "FALL_DETECTED") {
+            console.log("🚨 Hardware fall alert received! Starting vision check...");
+            setHardwareAlert(true);
+            
+            // Auto-start camera if not already running
+            if (!isTracking.current) {
+              startPrediction();
+            }
+          }
+        } catch (e) {
+          console.error("❌ WebSocket message parse error:", e);
+        }
+      };
+
+      ws.onerror = (e) => {
+        console.error("⚠️ WebSocket error occurred", e);
+        setWsStatus("disconnected");
+      };
+
+      ws.onclose = (e) => {
+        // e.code 1000 is a "normal closure" (like when the component unmounts)
+        if (e.code !== 1000) {
+          console.log("🔌 WebSocket closed unexpectedly. Retrying in 3s...");
+          setWsStatus("disconnected");
+          reconnectTimeout = setTimeout(connect, 3000);
+        } else {
+          console.log("🔌 WebSocket closed normally.");
+        }
+      };
+    };
+
+    connect();
+
+    // ── Cleanup function: Runs when the component unmounts ──
+    return () => {
+      if (ws) {
+        ws.close(1000, "Component unmounted");
+      }
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+      }
+    };
+  }, []);
+  // useEffect(() => {
+  //   setWsStatus("connecting");
+  //   const ws = new WebSocket(WS_URL);
+
+  //   ws.onopen = () => {
+  //     console.log("WebSocket connected to relay server");
+  //     setWsStatus("connected");
+  //   };
+
+  //   ws.onmessage = (event) => {
+  //     try {
+  //       const data = JSON.parse(event.data);
+  //       if (data.type === "FALL_DETECTED") {
+  //         console.log("Hardware fall alert received — starting vision check...");
+  //         setHardwareAlert(true);
+  //         // Auto-start camera if not already running
+  //         if (!isTracking.current) {
+  //           startPrediction();
+  //         }
+  //       }
+  //     } catch (e) {
+  //       console.error("WebSocket message parse error:", e);
+  //     }
+  //   };
+
+  //   ws.onerror = (e) => {
+  //     console.error("WebSocket error:", e);
+  //     setWsStatus("disconnected");
+  //   };
+
+  //   ws.onclose = () => {
+  //     console.log("WebSocket disconnected");
+  //     setWsStatus("disconnected");
+  //   };
+
+  //   return () => ws.close();
+  // }, []);
+
+  // ── Pose landmarker initialisation ───────────────────────
   useEffect(() => {
     if (poseLandmarkerRef.current) return;
     const createPoseLandmarker = async () => {
@@ -388,48 +320,169 @@ const PoseEngine = () => {
             delegate: "GPU",
           },
           runningMode: "VIDEO",
-          numPoses: 1, //number of bodies it detects: 1 because hypothetically 1. in system, we are only monitoring one person as they have the dashboard. a second isn't in the system, as the wearer and the monitored are linked.
+          numPoses: 1,
         },
       );
     };
     createPoseLandmarker();
   }, []);
+
+  // ── Frame prediction loop ────────────────────────────────
+  const predictFall = () => {
+    if (!isTracking.current) return;
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const poseLandmarker = poseLandmarkerRef.current;
+    if (!video || !canvas || !poseLandmarker) return;
+
+    if (canvas.width !== video.videoWidth) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+    }
+
+    const startTimeMs = performance.now();
+    const poseLandmarkerResults = poseLandmarker.detectForVideo(
+      video,
+      startTimeMs,
+    );
+
+    const canvasCtx = canvas.getContext("2d");
+    if (canvasCtx) {
+      clearCanvas(canvasCtx);
+      const drawingUtils = new DrawingUtils(canvasCtx);
+      if (poseLandmarkerResults.landmarks) {
+        for (const landmarks of poseLandmarkerResults.landmarks) {
+          drawingUtils.drawConnectors(landmarks, PoseLandmarker.POSE_CONNECTIONS);
+          drawingUtils.drawLandmarks(landmarks, {
+            radius: (data) => DrawingUtils.lerp(data.from!.z, -0.15, 0.1, 5, 1),
+          });
+        }
+      }
+    }
+
+    if (poseLandmarkerResults.worldLandmarks?.length > 0) {
+      const wl = poseLandmarkerResults.worldLandmarks[0];
+
+      const nose          = wl[0];
+      const leftShoulder  = wl[11];
+      const rightShoulder = wl[12];
+      const leftHip       = wl[23];
+      const rightHip      = wl[24];
+      const leftKnee      = wl[25];
+      const rightKnee     = wl[26];
+      const leftAnkle     = wl[27];
+      const rightAnkle    = wl[28];
+      const leftHeel      = wl[29];
+      const rightHeel     = wl[30];
+
+      const avg = (a: landmark, b: landmark) => ({
+        x: (a.x + b.x) / 2,
+        y: (a.y + b.y) / 2,
+        z: (a.z + b.z) / 2,
+      });
+
+      const avgShoulder = avg(leftShoulder, rightShoulder);
+      const avgHip      = avg(leftHip, rightHip);
+      const avgKnee     = avg(leftKnee, rightKnee);
+      const avgAnkle    = avg(leftAnkle, rightAnkle);
+      const avgHeel     = avg(leftHeel, rightHeel);
+
+      const extractedFeatures: FallFeatures = {
+        torsoLegAngle:     calculateTorsoLegAngle(avgShoulder, avgHip, avgKnee),
+        kneeAnkleDistance: calculateKneeAnkleDistance(avgKnee, avgAnkle),
+        headFloorDistance: calculateHeadFloorDistance(nose, avgHeel),
+        headAngle:         calculateHeadAngle(nose, avgShoulder),
+        noseAnkleDistance: calculateNoseAnkleDistance(nose, avgAnkle),
+        aspectRatio:       bodyAspectRatio(leftAnkle, rightShoulder, nose, avgHeel),
+      };
+
+      const vote = buildFrameVote(extractedFeatures);
+      frameBufferRef.current.push(vote);
+
+      const targetSize = getDynamicBufferSize(confidence);
+      targetSizeRef.current = targetSize;
+      while (frameBufferRef.current.length > targetSize) {
+        frameBufferRef.current.shift();
+      }
+
+      const { isFall, confidence: currentConfidence } = evaluateBuffer(
+        frameBufferRef.current,
+      );
+
+      setFallDetected(isFall);
+      setConfidence(currentConfidence);
+
+      // Clear hardware alert once vision confirms or denies
+      if (hardwareAlert && currentConfidence > 0.1) {
+        setHardwareAlert(false);
+      }
+    }
+
+    window.requestAnimationFrame(predictFall);
+  };
+
+  // ── Status indicator colour ──────────────────────────────
+  const wsStatusColor = {
+    connected: "text-green-400",
+    connecting: "text-yellow-400",
+    disconnected: "text-red-400",
+  }[wsStatus];
+
+  // ── Render ───────────────────────────────────────────────
   return (
     <div className="">
       <div className="max-w-7xl w-full flex justify-center items-center flex-col gap-2 p-3">
-        {/* Container for heading text */}
-        <div>
+
+        {/* Header / status bar */}
+        <div className="w-full">
           <h2 className="text-center text-blue-400 font-mono">
             Pose Engine Ready ...
           </h2>
 
-          <div className="text-xs text-white font-mono bg-gray-900 px-3 py-1">
-            Confidence: {Math.round(confidence * 100)}% | Buffer:{" "}
-            {frameBufferRef.current.length}/{targetSizeRef.current}
-            {fallDetected && (
-              <div className="bg-red-600 text-white text-center py-2 font-bold text-lg">
-                ⚠️ FALL DETECTED — Confidence: {Math.round(confidence * 100)}%
-              </div>
-            )}
+          <div className="text-xs text-white font-mono bg-gray-900 px-3 py-1 flex items-center justify-between flex-wrap gap-1">
+            <span>
+              Confidence: {Math.round(confidence * 100)}% | Buffer:{" "}
+              {frameBufferRef.current.length}/{targetSizeRef.current}
+            </span>
+            <span className={wsStatusColor}>
+              ● Server: {wsStatus}
+            </span>
           </div>
+
+          {/* Hardware alert banner */}
+          {hardwareAlert && !fallDetected && (
+            <div className="bg-yellow-500 text-black text-center py-2 font-bold text-sm">
+              ⚡ Hardware fall detected — verifying with camera...
+            </div>
+          )}
+
+          {/* Vision confirmed fall banner */}
+          {fallDetected && (
+            <div className="bg-red-600 text-white text-center py-2 font-bold text-lg">
+              ⚠️ FALL CONFIRMED — Hardware + Vision —{" "}
+              {Math.round(confidence * 100)}% confidence
+            </div>
+          )}
         </div>
-        {/* Container for video and canvas */}
-        <div className="relative max-w-full  w-full h-[90vh] bg-pink-300 border-2 border-blue-100 rounded-2xl">
+
+        {/* Video + canvas */}
+        <div className="relative max-w-full w-full h-[90vh] bg-black border-2 border-blue-100 rounded-2xl">
           <video
             className="absolute top-0 left-0 w-full h-full object-contain"
             ref={videoRef}
             autoPlay
             playsInline
-          ></video>
+          />
           <canvas
             className="absolute top-0 left-0 w-full h-full object-contain"
             ref={canvasRef}
-          ></canvas>
+          />
         </div>
-        {/* Container containing button */}
+
+        {/* Button */}
         <div>
           <button
-            className=" bg-blue-950 border-blue-300 rounded-xl p-4"
+            className="bg-blue-950 border-blue-300 rounded-xl p-4"
             onClick={handleButtonPress}
           >
             <p className="text-blue-100">
@@ -437,6 +490,7 @@ const PoseEngine = () => {
             </p>
           </button>
         </div>
+
       </div>
     </div>
   );
