@@ -1,496 +1,299 @@
-import {
-  DrawingUtils,
-  FilesetResolver,
-  PoseLandmarker,
-} from "@mediapipe/tasks-vision";
+import { DrawingUtils, FilesetResolver, PoseLandmarker } from "@mediapipe/tasks-vision";
 import { useEffect, useRef, useState } from "react";
 
-// ── Types ─────────────────────────────────────────────────────
-interface landmark {
-  x: number;
-  y: number;
-  z: number;
-  visibility?: number;
-}
+// ── TYPES & INTERFACES ─────────────────────────────────────────
+interface landmark { x: number; y: number; z: number; visibility?: number; }
+interface FallFeatures { torsoLegAngle: number | null; kneeAnkleDistance: number; headFloorDistance: number; headAngle: number; noseAnkleDistance: number; aspectRatio: number; }
+interface FrameVote { torsoLegAngle: boolean; kneeAnkleDistance: boolean; headFloorDistance: boolean; headAngle: boolean; noseAnkleDistance: boolean; aspectRatio: boolean; }
 
-interface FallFeatures {
-  torsoLegAngle: number | null;
-  kneeAnkleDistance: number;
-  headFloorDistance: number;
-  headAngle: number;
-  noseAnkleDistance: number;
-  aspectRatio: number;
-}
+// ── CONFIGURATION ──────────────────────────────────────────────
+const MAX_BUFFER = 40;            // The rolling window for confidence calculation
+const FALL_THRESHOLD = 0.6;       // 60% confidence triggers the fall state
+const RECOVERY_THRESHOLD = 0.35;  // Below 35% confidence triggers recovery timer
+const WS_URL = "ws://10.0.1.25:8080"; 
 
-interface FrameVote {
-  torsoLegAngle: boolean;
-  kneeAnkleDistance: boolean;
-  headFloorDistance: boolean;
-  headAngle: boolean;
-  noseAnkleDistance: boolean;
-  aspectRatio: boolean;
-}
+// Weighted voting: Prioritizes critical metrics like torso angle and height
+const FEATURE_WEIGHTS: Record<keyof FrameVote, number> = { 
+  torsoLegAngle: 3, 
+  headFloorDistance: 2, 
+  noseAnkleDistance: 2, 
+  aspectRatio: 2, 
+  kneeAnkleDistance: 1, 
+  headAngle: 1 
+};
+const MAX_SCORE_PER_FRAME = Object.values(FEATURE_WEIGHTS).reduce((a, b) => a + b, 0);
 
-// ── Constants ─────────────────────────────────────────────────
-const MIN_BUFFER = 8;
-const MAX_BUFFER = 40;
-const FALL_THRESHOLD = 0.6;
-const WS_URL = "ws://10.0.1.25:8080"; // ← replace with your PC's IP
-
-const getDynamicBufferSize = (confidence: number): number => {
-  const t = Math.min(1, confidence / FALL_THRESHOLD);
-  const size = MIN_BUFFER + (MAX_BUFFER - MIN_BUFFER) * (t * t);
-  return Math.round(size);
+// ── MATHEMATICAL UTILITIES ─────────────────────────────────────
+const calculateTorsoLegAngle = (s: landmark, h: landmark, k: landmark) => {
+  const ax = h.x - s.x, ay = h.y - s.y, bx = k.x - h.x, by = k.y - h.y;
+  const dot = ax * bx + ay * by, magA = Math.sqrt(ax*ax + ay*ay), magB = Math.sqrt(bx*bx + by*by);
+  return magA === 0 || magB === 0 ? null : (Math.acos(Math.min(1, Math.max(-1, dot / (magA * magB)))) * 180) / Math.PI;
 };
 
-const FEATURE_WEIGHTS: Record<keyof FrameVote, number> = {
-  torsoLegAngle: 3,
-  headFloorDistance: 2,
-  noseAnkleDistance: 2,
-  aspectRatio: 2,
-  kneeAnkleDistance: 1,
-  headAngle: 1,
-};
-
-const MAX_SCORE_PER_FRAME = Object.values(FEATURE_WEIGHTS).reduce(
-  (a, b) => a + b,
-  0,
-);
-
-// ── Feature calculations ──────────────────────────────────────
-const calculateTorsoLegAngle = (
-  shoulder: landmark,
-  hip: landmark,
-  knee: landmark,
-): number | null => {
-  const ax = hip.x - shoulder.x;
-  const ay = hip.y - shoulder.y;
-  const bx = knee.x - hip.x;
-  const by = knee.y - hip.y;
-  const dot = ax * bx + ay * by;
-  const magA = Math.sqrt(ax * ax + ay * ay);
-  const magB = Math.sqrt(bx * bx + by * by);
-  if (magA === 0 || magB === 0) return null;
-  const cosAngle = Math.min(1, Math.max(-1, dot / (magA * magB)));
-  return (Math.acos(cosAngle) * 180) / Math.PI;
-};
-
-const calculateKneeAnkleDistance = (
-  avgKnee: landmark,
-  avgAnkle: landmark,
-): number => Math.abs(avgKnee.y - avgAnkle.y);
-
-const calculateHeadFloorDistance = (
-  nose: landmark,
-  avgHeel: landmark,
-): number => Math.abs(nose.y - avgHeel.y);
-
-const calculateHeadAngle = (nose: landmark, avgShoulder: landmark): number =>
-  (Math.atan2(nose.y - avgShoulder.y, nose.x - avgShoulder.x) * 180) / Math.PI;
-
-const calculateNoseAnkleDistance = (
-  nose: landmark,
-  avgAnkle: landmark,
-): number => {
-  const dx = nose.x - avgAnkle.x;
-  const dy = nose.y - avgAnkle.y;
-  const dz = nose.z - avgAnkle.z;
-  return Math.sqrt(dx * dx + dy * dy + dz * dz);
-};
-
-const bodyAspectRatio = (
-  leftAnkle: landmark,
-  rightShoulder: landmark,
-  nose: landmark,
-  avgHeel: landmark,
-): number => {
-  const horizontalSpread = Math.abs(leftAnkle.x - rightShoulder.x);
-  const verticalHeight = Math.abs(nose.y - avgHeel.y);
-  if (verticalHeight === 0) return 0;
-  return horizontalSpread / verticalHeight;
-};
-
-const buildFrameVote = (features: FallFeatures): FrameVote => ({
-  torsoLegAngle:
-    ((features.torsoLegAngle ?? 180) >= 70 &&
-      (features.torsoLegAngle ?? 180) <= 110) ||
-    (features.torsoLegAngle ?? 180) < 30,
-  kneeAnkleDistance: (features.kneeAnkleDistance ?? 1) < 0.25,
-  headFloorDistance: (features.headFloorDistance ?? 1) < 0.4,
-  headAngle: features.headAngle < 45 || features.headAngle > 135,
-  noseAnkleDistance: features.noseAnkleDistance < 1.5,
-  aspectRatio: features.aspectRatio > 1.0,
+const buildFrameVote = (f: FallFeatures): FrameVote => ({
+  torsoLegAngle: ((f.torsoLegAngle ?? 180) >= 70 && (f.torsoLegAngle ?? 180) <= 110) || (f.torsoLegAngle ?? 180) < 30,
+  kneeAnkleDistance: f.kneeAnkleDistance < 0.25,
+  headFloorDistance: f.headFloorDistance < 0.35,
+  headAngle: f.headAngle < 45 || f.headAngle > 135,
+  noseAnkleDistance: f.noseAnkleDistance < 1.3,
+  aspectRatio: f.aspectRatio > 1.2, 
 });
 
-const scoreFrame = (vote: FrameVote): number =>
-  (Object.keys(FEATURE_WEIGHTS) as Array<keyof FrameVote>).reduce(
-    (total, key) => total + (vote[key] ? FEATURE_WEIGHTS[key] : 0),
-    0,
-  );
-
-const evaluateBuffer = (
-  buffer: FrameVote[],
-): { isFall: boolean; confidence: number } => {
-  if (buffer.length === 0) return { isFall: false, confidence: 0 };
-  const bufferScore = buffer.reduce(
-    (total, frame) => total + scoreFrame(frame),
-    0,
-  );
-  const confidence = bufferScore / (MAX_SCORE_PER_FRAME * buffer.length);
-  return { isFall: confidence >= FALL_THRESHOLD, confidence };
-};
-
-// ── Component ─────────────────────────────────────────────────
 const PoseEngine = () => {
+  // ── REACT STATE ──────────────────────────────────────────────
   const [isPredicting, setIsPredicting] = useState(false);
   const [confidence, setConfidence] = useState(0);
   const [fallDetected, setFallDetected] = useState(false);
-  const [hardwareAlert, setHardwareAlert] = useState(false); // ← new: tracks ESP32 alert
+  const [isFalseAlarm, setIsFalseAlarm] = useState(false);
+  const [hardwareAlert, setHardwareAlert] = useState(false);
   const [wsStatus, setWsStatus] = useState<"connecting" | "connected" | "disconnected">("disconnected");
+  
+  // Monitoring Timers
+  const [recoveryCounter, setRecoveryCounter] = useState(0);
+  const [fallDurationCounter, setFallDurationCounter] = useState(0);
 
+  // ── REFS (PERFORMANCE & PERSISTENCE) ─────────────────────────
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const poseLandmarkerRef = useRef<PoseLandmarker | null>(null);
-  const isTracking = useRef(false);
-  const frameBufferRef = useRef<FrameVote[]>([]);
-  const targetSizeRef = useRef(MIN_BUFFER);
+  const wsRef = useRef<WebSocket | null>(null);
+  
+  // Logic Refs (Updating these doesn't trigger a re-render)
+  const frameBufferRef = useRef<FrameVote[]>([]); // This is your buffer!
+  const stopSignalRef = useRef(false);            // The Kill Switch
+  const recoveryTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const twilioTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const clearCanvas = (ctx: CanvasRenderingContext2D) => {
-    ctx.clearRect(0, 0, canvasRef.current!.width, canvasRef.current!.height);
-  };
-
-  // ── Start camera & prediction ────────────────────────────
-  const startPrediction = async () => {
-    if (isTracking.current) return;
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.onloadeddata = () => {
-          videoRef.current!.play();
-          isTracking.current = true;
-          setIsPredicting(true);
-          predictFall();
-        };
+  // ── 1. TWILIO TIMER (12s) ────────────────────────────────────
+  useEffect(() => {
+    if (fallDetected && !isFalseAlarm) {
+      if (!twilioTimerRef.current) {
+        twilioTimerRef.current = setInterval(() => {
+          setFallDurationCounter(prev => {
+            if (prev >= 11) { // On the 12th second
+              console.log("SENDING TWILIO ALERT VIA WEBSOCKET...");
+              if (wsRef.current?.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({ type: "SEND_TWILIO_SMS" }));
+              }
+              clearInterval(twilioTimerRef.current!);
+              return 12;
+            }
+            return prev + 1;
+          });
+        }, 1000);
       }
-    } catch (error) {
-      console.error("Error accessing webcam:", error);
+    } else {
+      if (twilioTimerRef.current) clearInterval(twilioTimerRef.current);
+      twilioTimerRef.current = null;
+      setFallDurationCounter(0);
+    }
+  }, [fallDetected, isFalseAlarm]);
+
+  // ── 2. RECOVERY / FALSE ALARM TIMER (10s) ────────────────────
+  useEffect(() => {
+    if (fallDetected && confidence < RECOVERY_THRESHOLD) {
+      if (!recoveryTimerRef.current) {
+        recoveryTimerRef.current = setInterval(() => {
+          setRecoveryCounter(p => {
+            if (p >= 9) { // After 10s of movement/standing
+              setIsFalseAlarm(true);
+              setFallDetected(false);
+              setHardwareAlert(false);
+              return 0;
+            }
+            return p + 1;
+          });
+        }, 1000);
+      }
+    } else {
+      if (recoveryTimerRef.current) clearInterval(recoveryTimerRef.current);
+      recoveryTimerRef.current = null;
+      setRecoveryCounter(0);
+      // Reset false alarm if we detect a new high-confidence fall
+      if (confidence > FALL_THRESHOLD) setIsFalseAlarm(false);
+    }
+  }, [confidence, fallDetected]);
+
+  // ── 3. WEBSOCKET SETUP ───────────────────────────────────────
+  useEffect(() => {
+    const connect = () => {
+      setWsStatus("connecting");
+      const ws = new WebSocket(WS_URL);
+      wsRef.current = ws;
+      ws.onopen = () => setWsStatus("connected");
+      ws.onmessage = (e) => {
+        const d = JSON.parse(e.data);
+        if (d.type === "FALL_DETECTED") {
+          setHardwareAlert(true);
+          setIsFalseAlarm(false);
+          handleStart(); // Automatically boot up vision engine if sensor hits
+        }
+      };
+      ws.onclose = () => { setWsStatus("disconnected"); setTimeout(connect, 3000); };
+    };
+    connect();
+    return () => wsRef.current?.close();
+  }, []);
+
+  // ── 4. CONTROL HANDLERS (EXPLICIT BUTTON LOGIC) ──────────────
+  const handleStart = async () => {
+    stopSignalRef.current = false; // Release kill switch
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    if (videoRef.current) {
+      videoRef.current.srcObject = stream;
+      videoRef.current.onloadeddata = () => {
+        videoRef.current!.play();
+        setIsPredicting(true);
+        predictFall();
+      };
     }
   };
 
-  // ── Stop camera & prediction ─────────────────────────────
-  const stopPrediction = () => {
-    isTracking.current = false;
-    frameBufferRef.current = [];
-    setFallDetected(false);
-    setHardwareAlert(false);
+  const handleStop = () => {
+    stopSignalRef.current = true; // Activate kill switch
+    setIsPredicting(false);
     setConfidence(0);
+    setFallDetected(false);
+    setIsFalseAlarm(false);
+    setHardwareAlert(false);
+    
+    // Stop the camera hardware tracks
     if (videoRef.current?.srcObject) {
       const stream = videoRef.current.srcObject as MediaStream;
-      stream.getTracks().forEach((track) => track.stop());
+      stream.getTracks().forEach(track => track.stop());
       videoRef.current.srcObject = null;
     }
-    const canvasCtx = canvasRef.current?.getContext("2d");
-    if (canvasCtx) clearCanvas(canvasCtx);
-    targetSizeRef.current = MIN_BUFFER;
-    setIsPredicting(false);
+    
+    // Clear canvas visual leftovers
+    const ctx = canvasRef.current?.getContext("2d");
+    ctx?.clearRect(0, 0, canvasRef.current?.width || 0, canvasRef.current?.height || 0);
   };
 
-  const handleButtonPress = async () => {
-    if (isTracking.current) {
-      stopPrediction();
-    } else {
-      await startPrediction();
-    }
-  };
-
-  // ── WebSocket connection to relay server ─────────────────
-  // ── WebSocket connection to relay server ─────────────────
-  useEffect(() => {
-    let ws: WebSocket | null = null;
-    let reconnectTimeout: ReturnType<typeof setTimeout>;
-
-    const connect = () => {
-      console.log("Attempting to connect to WebSocket...");
-      setWsStatus("connecting");
-      
-      ws = new WebSocket(WS_URL);
-
-      ws.onopen = () => {
-        console.log("✅ WebSocket connected to relay server");
-        setWsStatus("connected");
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          if (data.type === "FALL_DETECTED") {
-            console.log("🚨 Hardware fall alert received! Starting vision check...");
-            setHardwareAlert(true);
-            
-            // Auto-start camera if not already running
-            if (!isTracking.current) {
-              startPrediction();
-            }
-          }
-        } catch (e) {
-          console.error("❌ WebSocket message parse error:", e);
-        }
-      };
-
-      ws.onerror = (e) => {
-        console.error("⚠️ WebSocket error occurred", e);
-        setWsStatus("disconnected");
-      };
-
-      ws.onclose = (e) => {
-        // e.code 1000 is a "normal closure" (like when the component unmounts)
-        if (e.code !== 1000) {
-          console.log("🔌 WebSocket closed unexpectedly. Retrying in 3s...");
-          setWsStatus("disconnected");
-          reconnectTimeout = setTimeout(connect, 3000);
-        } else {
-          console.log("🔌 WebSocket closed normally.");
-        }
-      };
-    };
-
-    connect();
-
-    // ── Cleanup function: Runs when the component unmounts ──
-    return () => {
-      if (ws) {
-        ws.close(1000, "Component unmounted");
-      }
-      if (reconnectTimeout) {
-        clearTimeout(reconnectTimeout);
-      }
-    };
-  }, []);
-  // useEffect(() => {
-  //   setWsStatus("connecting");
-  //   const ws = new WebSocket(WS_URL);
-
-  //   ws.onopen = () => {
-  //     console.log("WebSocket connected to relay server");
-  //     setWsStatus("connected");
-  //   };
-
-  //   ws.onmessage = (event) => {
-  //     try {
-  //       const data = JSON.parse(event.data);
-  //       if (data.type === "FALL_DETECTED") {
-  //         console.log("Hardware fall alert received — starting vision check...");
-  //         setHardwareAlert(true);
-  //         // Auto-start camera if not already running
-  //         if (!isTracking.current) {
-  //           startPrediction();
-  //         }
-  //       }
-  //     } catch (e) {
-  //       console.error("WebSocket message parse error:", e);
-  //     }
-  //   };
-
-  //   ws.onerror = (e) => {
-  //     console.error("WebSocket error:", e);
-  //     setWsStatus("disconnected");
-  //   };
-
-  //   ws.onclose = () => {
-  //     console.log("WebSocket disconnected");
-  //     setWsStatus("disconnected");
-  //   };
-
-  //   return () => ws.close();
-  // }, []);
-
-  // ── Pose landmarker initialisation ───────────────────────
-  useEffect(() => {
-    if (poseLandmarkerRef.current) return;
-    const createPoseLandmarker = async () => {
-      const vision = await FilesetResolver.forVisionTasks(
-        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm",
-      );
-      poseLandmarkerRef.current = await PoseLandmarker.createFromOptions(
-        vision,
-        {
-          baseOptions: {
-            modelAssetPath: "/pose_landmarker_full.task",
-            delegate: "GPU",
-          },
-          runningMode: "VIDEO",
-          numPoses: 1,
-        },
-      );
-    };
-    createPoseLandmarker();
-  }, []);
-
-  // ── Frame prediction loop ────────────────────────────────
+  // ── 5. THE AI LOOP ───────────────────────────────────────────
   const predictFall = () => {
-    if (!isTracking.current) return;
+    // Kill Switch Check: Exit immediately if system is disabled
+    if (stopSignalRef.current || !poseLandmarkerRef.current || !videoRef.current) return;
+    
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    const poseLandmarker = poseLandmarkerRef.current;
-    if (!video || !canvas || !poseLandmarker) return;
+    const ctx = canvas?.getContext("2d");
 
-    if (canvas.width !== video.videoWidth) {
+    if (canvas && video.videoWidth > 0) {
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
     }
 
-    const startTimeMs = performance.now();
-    const poseLandmarkerResults = poseLandmarker.detectForVideo(
-      video,
-      startTimeMs,
-    );
+    const results = poseLandmarkerRef.current.detectForVideo(video, performance.now());
 
-    const canvasCtx = canvas.getContext("2d");
-    if (canvasCtx) {
-      clearCanvas(canvasCtx);
-      const drawingUtils = new DrawingUtils(canvasCtx);
-      if (poseLandmarkerResults.landmarks) {
-        for (const landmarks of poseLandmarkerResults.landmarks) {
-          drawingUtils.drawConnectors(landmarks, PoseLandmarker.POSE_CONNECTIONS);
-          drawingUtils.drawLandmarks(landmarks, {
-            radius: (data) => DrawingUtils.lerp(data.from!.z, -0.15, 0.1, 5, 1),
-          });
+    // Visualization: Draw the skeleton
+    if (ctx && canvas) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const drawingUtils = new DrawingUtils(ctx);
+      if (results.landmarks) {
+        for (const landmarks of results.landmarks) {
+          drawingUtils.drawConnectors(landmarks, PoseLandmarker.POSE_CONNECTIONS, { color: '#00FF00', lineWidth: 3 });
+          drawingUtils.drawLandmarks(landmarks, { radius: 2, color: '#FF0000' });
         }
       }
     }
 
-    if (poseLandmarkerResults.worldLandmarks?.length > 0) {
-      const wl = poseLandmarkerResults.worldLandmarks[0];
+    if (results.worldLandmarks?.length > 0) {
+      const wl = results.worldLandmarks[0];
+      const avg = (a: number, b: number) => ({ x: (wl[a].x + wl[b].x)/2, y: (wl[a].y + wl[b].y)/2, z: (wl[a].z + wl[b].z)/2 });
 
-      const nose          = wl[0];
-      const leftShoulder  = wl[11];
-      const rightShoulder = wl[12];
-      const leftHip       = wl[23];
-      const rightHip      = wl[24];
-      const leftKnee      = wl[25];
-      const rightKnee     = wl[26];
-      const leftAnkle     = wl[27];
-      const rightAnkle    = wl[28];
-      const leftHeel      = wl[29];
-      const rightHeel     = wl[30];
-
-      const avg = (a: landmark, b: landmark) => ({
-        x: (a.x + b.x) / 2,
-        y: (a.y + b.y) / 2,
-        z: (a.z + b.z) / 2,
-      });
-
-      const avgShoulder = avg(leftShoulder, rightShoulder);
-      const avgHip      = avg(leftHip, rightHip);
-      const avgKnee     = avg(leftKnee, rightKnee);
-      const avgAnkle    = avg(leftAnkle, rightAnkle);
-      const avgHeel     = avg(leftHeel, rightHeel);
-
-      const extractedFeatures: FallFeatures = {
-        torsoLegAngle:     calculateTorsoLegAngle(avgShoulder, avgHip, avgKnee),
-        kneeAnkleDistance: calculateKneeAnkleDistance(avgKnee, avgAnkle),
-        headFloorDistance: calculateHeadFloorDistance(nose, avgHeel),
-        headAngle:         calculateHeadAngle(nose, avgShoulder),
-        noseAnkleDistance: calculateNoseAnkleDistance(nose, avgAnkle),
-        aspectRatio:       bodyAspectRatio(leftAnkle, rightShoulder, nose, avgHeel),
+      // Build the features for this frame
+      const f: FallFeatures = {
+        torsoLegAngle: calculateTorsoLegAngle(avg(11,12), avg(23,24), avg(25,26)),
+        kneeAnkleDistance: Math.abs(avg(25,26).y - avg(27,28).y),
+        headFloorDistance: Math.abs(wl[0].y - avg(29,30).y),
+        headAngle: (Math.atan2(wl[0].y - avg(11,12).y, wl[0].x - avg(11,12).x) * 180) / Math.PI,
+        noseAnkleDistance: Math.sqrt(Math.pow(wl[0].x-avg(27,28).x,2)+Math.pow(wl[0].y-avg(27,28).y,2)),
+        aspectRatio: Math.abs(wl[27].x - wl[12].x) / Math.abs(wl[0].y - avg(29,30).y),
       };
 
-      const vote = buildFrameVote(extractedFeatures);
-      frameBufferRef.current.push(vote);
+      // BUFFER MANAGEMENT: Store the results of this frame
+      frameBufferRef.current.push(buildFrameVote(f));
+      if (frameBufferRef.current.length > MAX_BUFFER) frameBufferRef.current.shift();
 
-      const targetSize = getDynamicBufferSize(confidence);
-      targetSizeRef.current = targetSize;
-      while (frameBufferRef.current.length > targetSize) {
-        frameBufferRef.current.shift();
-      }
+      // Calculation: Weighted confidence score over the buffer
+      const bufferScore = frameBufferRef.current.reduce((t, v) => t + (Object.keys(FEATURE_WEIGHTS) as Array<keyof FrameVote>).reduce((st, k) => st + (v[k] ? FEATURE_WEIGHTS[k] : 0), 0), 0);
+      let curConf = bufferScore / (MAX_SCORE_PER_FRAME * frameBufferRef.current.length);
 
-      const { isFall, confidence: currentConfidence } = evaluateBuffer(
-        frameBufferRef.current,
-      );
+      // Anti-Kneeling Guard: Slash confidence if the user is upright
+      if (f.aspectRatio < 0.85) curConf *= 0.3;
 
-      setFallDetected(isFall);
-      setConfidence(currentConfidence);
-
-      // Clear hardware alert once vision confirms or denies
-      if (hardwareAlert && currentConfidence > 0.1) {
-        setHardwareAlert(false);
+      setConfidence(curConf);
+      if (curConf >= FALL_THRESHOLD) {
+        setFallDetected(true);
+        setIsFalseAlarm(false);
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: "VISION_CONFIRMED" }));
+        }
       }
     }
-
-    window.requestAnimationFrame(predictFall);
+    
+    // Only schedule the next frame if the stop signal is FALSE
+    if (!stopSignalRef.current) {
+      window.requestAnimationFrame(predictFall);
+    }
   };
 
-  // ── Status indicator colour ──────────────────────────────
-  const wsStatusColor = {
-    connected: "text-green-400",
-    connecting: "text-yellow-400",
-    disconnected: "text-red-400",
-  }[wsStatus];
+  // Initialize MediaPipe once
+  useEffect(() => {
+    FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm").then(v => {
+      PoseLandmarker.createFromOptions(v, { baseOptions: { modelAssetPath: "/pose_landmarker_full.task", delegate: "GPU" }, runningMode: "VIDEO" })
+      .then(p => poseLandmarkerRef.current = p);
+    });
+  }, []);
 
-  // ── Render ───────────────────────────────────────────────
   return (
-    <div className="">
-      <div className="max-w-7xl w-full flex justify-center items-center flex-col gap-2 p-3">
-
-        {/* Header / status bar */}
-        <div className="w-full">
-          <h2 className="text-center text-blue-400 font-mono">
-            Pose Engine Ready ...
-          </h2>
-
-          <div className="text-xs text-white font-mono bg-gray-900 px-3 py-1 flex items-center justify-between flex-wrap gap-1">
-            <span>
-              Confidence: {Math.round(confidence * 100)}% | Buffer:{" "}
-              {frameBufferRef.current.length}/{targetSizeRef.current}
-            </span>
-            <span className={wsStatusColor}>
-              ● Server: {wsStatus}
-            </span>
+    <div className="flex flex-col items-center gap-4 p-4 bg-black min-h-screen text-white font-mono">
+      <div className="w-full max-w-4xl border-2 border-blue-900 rounded-xl p-6 bg-gray-900 shadow-2xl">
+        
+        {/* Status Headers */}
+        <div className="flex justify-between text-xs mb-4 uppercase tracking-widest">
+          <div className="flex gap-4">
+            <span>Fall Confidence: <span className={confidence > 0.5 ? 'text-red-400' : 'text-blue-400'}>{Math.round(confidence * 100)}%</span></span>
+            {fallDetected && <span>Down Time: {fallDurationCounter}s</span>}
           </div>
-
-          {/* Hardware alert banner */}
-          {hardwareAlert && !fallDetected && (
-            <div className="bg-yellow-500 text-black text-center py-2 font-bold text-sm">
-              ⚡ Hardware fall detected — verifying with camera...
-            </div>
-          )}
-
-          {/* Vision confirmed fall banner */}
-          {fallDetected && (
-            <div className="bg-red-600 text-white text-center py-2 font-bold text-lg">
-              ⚠️ FALL CONFIRMED — Hardware + Vision —{" "}
-              {Math.round(confidence * 100)}% confidence
-            </div>
-          )}
+          <span className={wsStatus === 'connected' ? 'text-green-400' : 'text-red-500'}>Status: {wsStatus}</span>
         </div>
 
-        {/* Video + canvas */}
-        <div className="relative max-w-full w-full h-[90vh] bg-black border-2 border-blue-100 rounded-2xl">
-          <video
-            className="absolute top-0 left-0 w-full h-full object-contain"
-            ref={videoRef}
-            autoPlay
-            playsInline
-          />
-          <canvas
-            className="absolute top-0 left-0 w-full h-full object-contain"
-            ref={canvasRef}
-          />
+        {/* Dynamic Warning Banners */}
+        {hardwareAlert && !fallDetected && !isFalseAlarm && (
+          <div className="bg-yellow-500 text-black text-center p-2 font-bold mb-2 animate-pulse rounded">
+            ⚡ SENSOR TRIGGER: ANALYZING CAMERA...
+          </div>
+        )}
+        {fallDetected && (
+          <div className="bg-red-600 text-white text-center p-2 font-bold text-lg mb-2 rounded shadow-lg border-2 border-red-400">
+            🚨 EMERGENCY: FALL DETECTED ({fallDurationCounter}s)
+          </div>
+        )}
+        {isFalseAlarm && (
+          <div className="bg-blue-600 text-white text-center p-2 font-bold text-lg mb-2 rounded border-2 border-blue-400 ">
+            ✅ FALSE ALARM: RECOVERY CONFIRMED
+          </div>
+        )}
+        {recoveryCounter > 0 && (
+          <div className="bg-green-700 text-center p-1 text-xs mb-2 italic rounded">
+            Stabilization detected. Auto-clearing alert in {10 - recoveryCounter}s...
+          </div>
+        )}
+
+        {/* The Viewport */}
+        <div className="relative aspect-video bg-black rounded-lg overflow-hidden border-4 border-gray-800 shadow-inner">
+          <video ref={videoRef} className="absolute inset-0 w-full h-full object-cover opacity-60" autoPlay muted playsInline />
+          <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
         </div>
 
-        {/* Button */}
-        <div>
-          <button
-            className="bg-blue-950 border-blue-300 rounded-xl p-4"
-            onClick={handleButtonPress}
-          >
-            <p className="text-blue-100">
-              {!isPredicting ? "Enable Prediction" : "Disable Prediction"}
-            </p>
-          </button>
-        </div>
-
+        {/* Controls */}
+        <button 
+          onClick={() => isPredicting ? handleStop() : handleStart()} 
+          className={`mt-6 w-full p-4 rounded-lg font-bold transition-all transform active:scale-95 ${isPredicting ? 'bg-red-900 hover:bg-red-800' : 'bg-blue-700 hover:bg-blue-600'}`}
+        >
+          {isPredicting ? "DEACTIVATE MONITORING" : "INITIALIZE POSE ENGINE"}
+        </button>
       </div>
     </div>
   );
