@@ -25,7 +25,7 @@ const MIN_BUFFER = 8;
 const MAX_BUFFER = 40;
 const FALL_THRESHOLD = 0.6;
 const RECOVERY_THRESHOLD = 0.35;
-const WS_URL = "ws://YOUR_PC_IP:8080";
+const WS_URL = import.meta.env.VITE_WS_URL;
 
 // ── DYNAMIC BUFFER ─────────────────────────────────────────────
 // Starts at MIN_BUFFER (8 frames) and grows quadratically toward MAX_BUFFER (40)

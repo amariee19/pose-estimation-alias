@@ -59,7 +59,7 @@ The engine uses human-defined heuristics to distinguish a fall from Activities o
 
 - [x] Initial MediaPipe Integration (Full Model)
 - [x] Handcrafted Feature Engine (Base Heuristics)
-- [ ] **Dynamic Buffer Implementation**: Refactoring the threshold logic to use quadratic growth patterns, improving accuracy across variable camera distances.
+- [x] **Dynamic Buffer Implementation**: Refactoring the threshold logic to use quadratic growth patterns, improving accuracy across variable camera distances.
 - [ ] Module III Integration (Emergency Alert Trigger)
 
 ---
