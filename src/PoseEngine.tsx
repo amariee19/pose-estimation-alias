@@ -240,7 +240,7 @@ const PoseEngine = () => {
             console.log("Hardware fall alert received — starting vision check.");
             setHardwareAlert(true);
             setIsFalseAlarm(false);
-            if (stopSignalRef.current) handleStart();
+            if (!isPredicting) handleStart(); 
           }
         } catch (err) {
           console.error("WebSocket message parse error:", err);
