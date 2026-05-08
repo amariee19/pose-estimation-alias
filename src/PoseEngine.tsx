@@ -27,12 +27,23 @@ const FALL_THRESHOLD = 0.6;
 const RECOVERY_THRESHOLD = 0.35;
 const WS_URL = import.meta.env.VITE_WS_URL;
 
+// ── I-SYNC BRIDGE ──────────────────────────────────────────────
+// When loaded inside the I-Sync WebView, window.__isInsideISync is true.
+// Use ReactNativeWebView.postMessage instead of WebSocket in that case.
+const isInsideISync = (): boolean =>
+  typeof window !== "undefined" && !!(window as any).__isInsideISync;
+
+const sendToISync = (type: string, confidence = 0, feature = "") => {
+  if (!isInsideISync()) return;
+  (window as any).ReactNativeWebView?.postMessage(
+    JSON.stringify({ type, confidence, feature })
+  );
+};
+
 // ── DYNAMIC BUFFER ─────────────────────────────────────────────
-// Starts at MIN_BUFFER (8 frames) and grows quadratically toward MAX_BUFFER (40)
-// as confidence rises. Fast to trigger, becomes more stringent as certainty grows.
 const getDynamicBufferSize = (confidence: number): number => {
-  const t = Math.min(1, confidence / FALL_THRESHOLD); // normalise 0→1
-  const size = MIN_BUFFER + (MAX_BUFFER - MIN_BUFFER) * (t * t); // quadratic growth
+  const t = Math.min(1, confidence / FALL_THRESHOLD);
+  const size = MIN_BUFFER + (MAX_BUFFER - MIN_BUFFER) * (t * t);
   return Math.round(size);
 };
 
@@ -78,7 +89,6 @@ const scoreFrame = (vote: FrameVote): number =>
 const evaluateBuffer = (buffer: FrameVote[]): { isFall: boolean; confidence: number } => {
   if (buffer.length === 0) return { isFall: false, confidence: 0 };
   const bufferScore = buffer.reduce((total, frame) => total + scoreFrame(frame), 0);
-  // Divide by dynamic length — not a fixed MAX_BUFFER — so early frames don't dilute score
   const confidence = bufferScore / (MAX_SCORE_PER_FRAME * buffer.length);
   return { isFall: confidence >= FALL_THRESHOLD, confidence };
 };
@@ -102,13 +112,57 @@ const PoseEngine = () => {
   const wsRef = useRef<WebSocket | null>(null);
   const frameBufferRef = useRef<FrameVote[]>([]);
   const stopSignalRef = useRef(false);
-  const confidenceRef = useRef(0); // mirrors confidence state for use inside rAF loop
-  const targetSizeRef = useRef(MIN_BUFFER); // tracks current dynamic buffer target
+  const confidenceRef = useRef(0);
+  const targetSizeRef = useRef(MIN_BUFFER);
   const recoveryTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const twilioTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const iSyncHandledRef = useRef(false); // tracks if I-Sync already handled this fall
 
-  // ── 1. TWILIO ALERT TIMER (fires after 12s of confirmed fall) ─
+  // ── 1. AUTO-START + READY HANDSHAKE (I-Sync only) ─────────────
   useEffect(() => {
+    if (!isInsideISync()) return;
+    sendToISync("POSE_ENGINE_READY");
+    handleStart();
+  }, []);
+
+  // ── 2. LISTEN FOR MESSAGES FROM I-SYNC ───────────────────────
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      try {
+        const msg = typeof e.data === "string" ? JSON.parse(e.data) : e.data;
+
+        if (msg.type === "APP_CONFIRMED") {
+          // I-Sync countdown expired or user tapped Confirm — fall already handled by app
+          iSyncHandledRef.current = true;
+          setFallDetected(false);
+          frameBufferRef.current = [];
+        }
+
+        if (msg.type === "APP_FALSE_ALARM") {
+          // I-Sync user tapped "I'm OK"
+          iSyncHandledRef.current = true;
+          setFallDetected(false);
+          setIsFalseAlarm(true);
+          frameBufferRef.current = [];
+        }
+
+        if (msg.type === "FALL_CANCELLED") {
+          // I-Sync cancelled mid-countdown (e.g. patient pressed cancel before timer ended)
+          iSyncHandledRef.current = true;
+          setFallDetected(false);
+          setIsFalseAlarm(false);
+          frameBufferRef.current = [];
+        }
+      } catch {}
+    };
+
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, []);
+
+  // ── 3. TWILIO ALERT TIMER (fires after 12s — standalone mode only) ─
+  useEffect(() => {
+    if (isInsideISync()) return; // I-Sync handles its own SMS
     if (fallDetected && !isFalseAlarm) {
       if (!twilioTimerRef.current) {
         twilioTimerRef.current = setInterval(() => {
@@ -135,7 +189,7 @@ const PoseEngine = () => {
     }
   }, [fallDetected, isFalseAlarm]);
 
-  // ── 2. RECOVERY TIMER (clears fall after 10s of low confidence) ─
+  // ── 4. RECOVERY TIMER (clears fall after 10s of low confidence) ─
   useEffect(() => {
     if (fallDetected && confidence < RECOVERY_THRESHOLD) {
       if (!recoveryTimerRef.current) {
@@ -145,7 +199,7 @@ const PoseEngine = () => {
               setIsFalseAlarm(true);
               setFallDetected(false);
               setHardwareAlert(false);
-              frameBufferRef.current = []; // clear buffer on recovery
+              frameBufferRef.current = [];
               if (recoveryTimerRef.current) {
                 clearInterval(recoveryTimerRef.current);
                 recoveryTimerRef.current = null;
@@ -166,8 +220,9 @@ const PoseEngine = () => {
     }
   }, [confidence, fallDetected]);
 
-  // ── 3. WEBSOCKET (auto-reconnects every 3s if lost) ───────────
+  // ── 5. WEBSOCKET (standalone mode only — skipped inside I-Sync) ─
   useEffect(() => {
+    if (isInsideISync()) return; // no WebSocket needed inside I-Sync
     const connect = () => {
       setWsStatus("connecting");
       const ws = new WebSocket(WS_URL);
@@ -185,7 +240,7 @@ const PoseEngine = () => {
             console.log("Hardware fall alert received — starting vision check.");
             setHardwareAlert(true);
             setIsFalseAlarm(false);
-            if (stopSignalRef.current) handleStart();
+            if (!isPredicting) handleStart(); 
           }
         } catch (err) {
           console.error("WebSocket message parse error:", err);
@@ -204,7 +259,7 @@ const PoseEngine = () => {
     return () => wsRef.current?.close();
   }, []);
 
-  // ── 4. MEDIAPIPE INITIALISATION ───────────────────────────────
+  // ── 6. MEDIAPIPE INITIALISATION ───────────────────────────────
   useEffect(() => {
     if (poseLandmarkerRef.current) return;
     FilesetResolver.forVisionTasks(
@@ -224,13 +279,14 @@ const PoseEngine = () => {
     });
   }, []);
 
-  // ── 5. CAMERA CONTROLS ────────────────────────────────────────
+  // ── 7. CAMERA CONTROLS ────────────────────────────────────────
   const handleStart = async () => {
-    if (!stopSignalRef.current && isPredicting) return; // already running
+    if (!stopSignalRef.current && isPredicting) return;
     stopSignalRef.current = false;
     frameBufferRef.current = [];
     confidenceRef.current = 0;
     targetSizeRef.current = MIN_BUFFER;
+    iSyncHandledRef.current = false;
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -257,6 +313,7 @@ const PoseEngine = () => {
     frameBufferRef.current = [];
     confidenceRef.current = 0;
     targetSizeRef.current = MIN_BUFFER;
+    iSyncHandledRef.current = false;
 
     if (videoRef.current?.srcObject) {
       const stream = videoRef.current.srcObject as MediaStream;
@@ -268,7 +325,7 @@ const PoseEngine = () => {
     ctx?.clearRect(0, 0, canvasRef.current?.width || 0, canvasRef.current?.height || 0);
   };
 
-  // ── 6. THE AI LOOP ────────────────────────────────────────────
+  // ── 8. THE DETECTION LOOP ─────────────────────────────────────
   const predictFall = () => {
     if (stopSignalRef.current || !poseLandmarkerRef.current || !videoRef.current) return;
 
@@ -327,35 +384,38 @@ const PoseEngine = () => {
         aspectRatio: Math.abs(wl[27].x - wl[12].x) / Math.abs(nose.y - avgHeel.y) || 0,
       };
 
-      // ── DYNAMIC BUFFER MANAGEMENT ──────────────────────────
-      // Buffer size grows quadratically with confidence:
-      // Low confidence → small buffer (fast to react)
-      // High confidence → large buffer (more certain before confirming)
       const targetSize = getDynamicBufferSize(confidenceRef.current);
       targetSizeRef.current = targetSize;
-
       frameBufferRef.current.push(buildFrameVote(f));
-
-      // Trim buffer to current dynamic target size
       while (frameBufferRef.current.length > targetSize) {
         frameBufferRef.current.shift();
       }
 
-      // ── CONFIDENCE CALCULATION ─────────────────────────────
       const { confidence: curConf, isFall } = evaluateBuffer(frameBufferRef.current);
-
-      // Anti-kneeling guard: suppress confidence if person is clearly upright
       const finalConf = f.aspectRatio < 0.85 ? curConf * 0.3 : curConf;
-
       confidenceRef.current = finalConf;
       setConfidence(finalConf);
 
-      if (isFall && finalConf >= FALL_THRESHOLD) {
+      if (isFall && finalConf >= FALL_THRESHOLD && !iSyncHandledRef.current) {
         setFallDetected(true);
         setIsFalseAlarm(false);
-        // Notify server that vision has confirmed the fall
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({ type: "VISION_CONFIRMED" }));
+
+        // Find the highest-weighted feature that voted true in the last frame
+        const lastFrame = frameBufferRef.current.at(-1);
+        const topFeature = lastFrame
+          ? (Object.keys(FEATURE_WEIGHTS) as Array<keyof FrameVote>)
+              .filter(k => lastFrame[k])
+              .sort((a, b) => FEATURE_WEIGHTS[b] - FEATURE_WEIGHTS[a])[0] ?? ""
+          : "";
+
+        if (isInsideISync()) {
+          // Inside I-Sync WebView — notify the app via the bridge
+          sendToISync("FALL_DETECTED", finalConf, topFeature);
+        } else {
+          // Standalone mode — use WebSocket as before
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({ type: "VISION_CONFIRMED" }));
+          }
         }
       }
     }
@@ -390,7 +450,7 @@ const PoseEngine = () => {
             </span>
             {fallDetected && <span>Down Time: {fallDurationCounter}s</span>}
           </div>
-          <span className={wsColor}>● {wsStatus}</span>
+          {!isInsideISync() && <span className={wsColor}>● {wsStatus}</span>}
         </div>
 
         {/* Alert banners */}
@@ -402,9 +462,14 @@ const PoseEngine = () => {
         {fallDetected && (
           <div className="bg-red-600 text-white text-center p-2 font-bold text-lg mb-2 rounded shadow-lg border-2 border-red-400">
             🚨 EMERGENCY: FALL DETECTED ({fallDurationCounter}s)
-            {fallDurationCounter < 12 && (
+            {!isInsideISync() && fallDurationCounter < 12 && (
               <div className="text-sm font-normal mt-1">
                 Alert sending in {12 - fallDurationCounter}s — press stop if false alarm
+              </div>
+            )}
+            {isInsideISync() && (
+              <div className="text-sm font-normal mt-1">
+                Waiting for I-Sync confirmation...
               </div>
             )}
           </div>
@@ -435,17 +500,19 @@ const PoseEngine = () => {
           />
         </div>
 
-        {/* Control button */}
-        <button
-          onClick={() => isPredicting ? handleStop() : handleStart()}
-          className={`mt-6 w-full p-4 rounded-lg font-bold transition-all transform active:scale-95 ${
-            isPredicting
-              ? "bg-red-900 hover:bg-red-800"
-              : "bg-blue-700 hover:bg-blue-600"
-          }`}
-        >
-          {isPredicting ? "DEACTIVATE MONITORING" : "INITIALIZE POSE ENGINE"}
-        </button>
+        {/* Control button — hidden inside I-Sync (camera auto-starts) */}
+        {!isInsideISync() && (
+          <button
+            onClick={() => isPredicting ? handleStop() : handleStart()}
+            className={`mt-6 w-full p-4 rounded-lg font-bold transition-all transform active:scale-95 ${
+              isPredicting
+                ? "bg-red-900 hover:bg-red-800"
+                : "bg-blue-700 hover:bg-blue-600"
+            }`}
+          >
+            {isPredicting ? "DEACTIVATE MONITORING" : "INITIALIZE POSE ENGINE"}
+          </button>
+        )}
 
       </div>
     </div>
