@@ -19,6 +19,24 @@ interface FrameVote {
   noseAnkleDistance: boolean;
   aspectRatio: boolean;
 }
+// ── I-SYNC INTEGRATION ─────────────────────────────────────────
+// When a fall is confirmed, this sends an alert to the I-Sync server.
+// The I-Sync server then broadcasts to the caregiver dashboard,
+// triggers the patient's 10-second countdown, and sends an emergency SMS.
+// !! Replace ISYNC_PATIENT_ID with the patient's ID from the I-Sync profile screen !!
+const ISYNC_SERVER     = "https://i-sync-ai.onrender.com";
+const ISYNC_PATIENT_ID = "PAT-HEWR25L";
+
+const sendIsyncFallAlert = () => {
+  fetch(`${ISYNC_SERVER}/fall`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ patientId: ISYNC_PATIENT_ID }),
+  })
+    .then(() => console.log("[I-Sync] Fall alert sent successfully."))
+    .catch(err => console.error("[I-Sync] Fall alert failed:", err));
+};
+// ──────────────────────────────────────────────────────────────
 
 // ── CONFIGURATION ──────────────────────────────────────────────
 const MIN_BUFFER = 8;
@@ -27,18 +45,18 @@ const FALL_THRESHOLD = 0.6;
 const RECOVERY_THRESHOLD = 0.35;
 const WS_URL = import.meta.env.VITE_WS_URL;
 
-// ── I-SYNC BRIDGE ──────────────────────────────────────────────
-// When loaded inside the I-Sync WebView, window.__isInsideISync is true.
-// Use ReactNativeWebView.postMessage instead of WebSocket in that case.
-const isInsideISync = (): boolean =>
-  typeof window !== "undefined" && !!(window as any).__isInsideISync;
+// // ── I-SYNC BRIDGE ──────────────────────────────────────────────
+// // When loaded inside the I-Sync WebView, window.__isInsideISync is true.
+// // Use ReactNativeWebView.postMessage instead of WebSocket in that case.
+// const isInsideISync = (): boolean =>
+//   typeof window !== "undefined" && !!(window as any).__isInsideISync;
 
-const sendToISync = (type: string, confidence = 0, feature = "") => {
-  if (!isInsideISync()) return;
-  (window as any).ReactNativeWebView?.postMessage(
-    JSON.stringify({ type, confidence, feature })
-  );
-};
+// const sendToISync = (type: string, confidence = 0, feature = "") => {
+//   if (!isInsideISync()) return;
+//   (window as any).ReactNativeWebView?.postMessage(
+//     JSON.stringify({ type, confidence, feature })
+//   );
+// };
 
 // ── DYNAMIC BUFFER ─────────────────────────────────────────────
 const getDynamicBufferSize = (confidence: number): number => {
@@ -116,14 +134,18 @@ const PoseEngine = () => {
   const targetSizeRef = useRef(MIN_BUFFER);
   const recoveryTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const twilioTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const iSyncHandledRef = useRef(false); // tracks if I-Sync already handled this fall
+  // Prevents the I-Sync alert firing on every frame once a fall is detected.
+  // Resets when the fall clears so the next real fall sends a fresh alert.
+  const isyncAlertSentRef = useRef(false);
+
+  // const iSyncHandledRef = useRef(false); // tracks if I-Sync already handled this fall
 
   // ── 1. AUTO-START + READY HANDSHAKE (I-Sync only) ─────────────
-  useEffect(() => {
-    if (!isInsideISync()) return;
-    sendToISync("POSE_ENGINE_READY");
-    handleStart();
-  }, []);
+  // useEffect(() => {
+  //   if (!isInsideISync()) return;
+  //   sendToISync("POSE_ENGINE_READY");
+  //   handleStart();
+  // }, []);
 
   // ── 2. LISTEN FOR MESSAGES FROM I-SYNC ───────────────────────
   useEffect(() => {
@@ -133,14 +155,14 @@ const PoseEngine = () => {
 
         if (msg.type === "APP_CONFIRMED") {
           // I-Sync countdown expired or user tapped Confirm — fall already handled by app
-          iSyncHandledRef.current = true;
+          // iSyncHandledRef.current = true;
           setFallDetected(false);
           frameBufferRef.current = [];
         }
 
         if (msg.type === "APP_FALSE_ALARM") {
           // I-Sync user tapped "I'm OK"
-          iSyncHandledRef.current = true;
+          // iSyncHandledRef.current = true;
           setFallDetected(false);
           setIsFalseAlarm(true);
           frameBufferRef.current = [];
@@ -148,7 +170,7 @@ const PoseEngine = () => {
 
         if (msg.type === "FALL_CANCELLED") {
           // I-Sync cancelled mid-countdown (e.g. patient pressed cancel before timer ended)
-          iSyncHandledRef.current = true;
+          // iSyncHandledRef.current = true;
           setFallDetected(false);
           setIsFalseAlarm(false);
           frameBufferRef.current = [];
@@ -162,7 +184,7 @@ const PoseEngine = () => {
 
   // ── 3. TWILIO ALERT TIMER (fires after 12s — standalone mode only) ─
   useEffect(() => {
-    if (isInsideISync()) return; // I-Sync handles its own SMS
+    // if (isInsideISync()) return; // I-Sync handles its own SMS
     if (fallDetected && !isFalseAlarm) {
       if (!twilioTimerRef.current) {
         twilioTimerRef.current = setInterval(() => {
@@ -200,6 +222,7 @@ const PoseEngine = () => {
               setFallDetected(false);
               setHardwareAlert(false);
               frameBufferRef.current = [];
+              isyncAlertSentRef.current = false; // reset so next fall sends a fresh alert
               if (recoveryTimerRef.current) {
                 clearInterval(recoveryTimerRef.current);
                 recoveryTimerRef.current = null;
@@ -222,7 +245,7 @@ const PoseEngine = () => {
 
   // ── 5. WEBSOCKET (standalone mode only — skipped inside I-Sync) ─
   useEffect(() => {
-    if (isInsideISync()) return; // no WebSocket needed inside I-Sync
+    // if (isInsideISync()) return; // no WebSocket needed inside I-Sync
     const connect = () => {
       setWsStatus("connecting");
       const ws = new WebSocket(WS_URL);
@@ -286,7 +309,8 @@ const PoseEngine = () => {
     frameBufferRef.current = [];
     confidenceRef.current = 0;
     targetSizeRef.current = MIN_BUFFER;
-    iSyncHandledRef.current = false;
+    isyncAlertSentRef.current = false; // reset on every new session
+    // iSyncHandledRef.current = false;
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -313,7 +337,8 @@ const PoseEngine = () => {
     frameBufferRef.current = [];
     confidenceRef.current = 0;
     targetSizeRef.current = MIN_BUFFER;
-    iSyncHandledRef.current = false;
+    isyncAlertSentRef.current = false; // reset on stop
+    // iSyncHandledRef.current = false;
 
     if (videoRef.current?.srcObject) {
       const stream = videoRef.current.srcObject as MediaStream;
@@ -396,9 +421,27 @@ const PoseEngine = () => {
       confidenceRef.current = finalConf;
       setConfidence(finalConf);
 
-      if (isFall && finalConf >= FALL_THRESHOLD && !iSyncHandledRef.current) {
+      // if (isFall && finalConf >= FALL_THRESHOLD && !iSyncHandledRef.current) {
+      //   setFallDetected(true);
+      //   setIsFalseAlarm(false);
+      if (isFall && finalConf >= FALL_THRESHOLD) {
         setFallDetected(true);
         setIsFalseAlarm(false);
+
+        // Notify your own WebSocket server
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: "VISION_CONFIRMED" }));
+        }
+
+        // ── I-SYNC ALERT ───────────────────────────────────────
+        // Fires once per fall (isyncAlertSentRef prevents re-firing
+        // on every frame of the 60fps loop while the fall is active).
+        // Resets automatically when the fall clears or monitoring stops.
+        if (!isyncAlertSentRef.current) {
+          isyncAlertSentRef.current = true;
+          sendIsyncFallAlert();
+        }
+        // ──────────────────────────────────────────────────────
 
         // Find the highest-weighted feature that voted true in the last frame
         const lastFrame = frameBufferRef.current.at(-1);
@@ -408,15 +451,15 @@ const PoseEngine = () => {
               .sort((a, b) => FEATURE_WEIGHTS[b] - FEATURE_WEIGHTS[a])[0] ?? ""
           : "";
 
-        if (isInsideISync()) {
-          // Inside I-Sync WebView — notify the app via the bridge
-          sendToISync("FALL_DETECTED", finalConf, topFeature);
-        } else {
-          // Standalone mode — use WebSocket as before
-          if (wsRef.current?.readyState === WebSocket.OPEN) {
-            wsRef.current.send(JSON.stringify({ type: "VISION_CONFIRMED" }));
-          }
-        }
+        // if (isInsideISync()) {
+        //   // Inside I-Sync WebView — notify the app via the bridge
+        //   sendToISync("FALL_DETECTED", finalConf, topFeature);
+        // } else {
+        //   // Standalone mode — use WebSocket as before
+        //   if (wsRef.current?.readyState === WebSocket.OPEN) {
+        //     wsRef.current.send(JSON.stringify({ type: "VISION_CONFIRMED" }));
+        //   }
+        // }
       }
     }
 
@@ -450,7 +493,8 @@ const PoseEngine = () => {
             </span>
             {fallDetected && <span>Down Time: {fallDurationCounter}s</span>}
           </div>
-          {!isInsideISync() && <span className={wsColor}>● {wsStatus}</span>}
+          {<span className={wsColor}>● {wsStatus}</span>}
+          {/* {!isInsideISync() && <span className={wsColor}>● {wsStatus}</span>} */}
         </div>
 
         {/* Alert banners */}
@@ -462,16 +506,21 @@ const PoseEngine = () => {
         {fallDetected && (
           <div className="bg-red-600 text-white text-center p-2 font-bold text-lg mb-2 rounded shadow-lg border-2 border-red-400">
             🚨 EMERGENCY: FALL DETECTED ({fallDurationCounter}s)
-            {!isInsideISync() && fallDurationCounter < 12 && (
+            {/* {!isInsideISync() && fallDurationCounter < 12 && (
+              <div className="text-sm font-normal mt-1">
+                Alert sending in {12 - fallDurationCounter}s — press stop if false alarm
+              </div>
+            )} */}
+            {fallDurationCounter < 12 && (
               <div className="text-sm font-normal mt-1">
                 Alert sending in {12 - fallDurationCounter}s — press stop if false alarm
               </div>
             )}
-            {isInsideISync() && (
+            {/* {isInsideISync() && (
               <div className="text-sm font-normal mt-1">
                 Waiting for I-Sync confirmation...
               </div>
-            )}
+            )} */}
           </div>
         )}
         {isFalseAlarm && (
@@ -501,7 +550,7 @@ const PoseEngine = () => {
         </div>
 
         {/* Control button — hidden inside I-Sync (camera auto-starts) */}
-        {!isInsideISync() && (
+        {/* {!isInsideISync() && (
           <button
             onClick={() => isPredicting ? handleStop() : handleStart()}
             className={`mt-6 w-full p-4 rounded-lg font-bold transition-all transform active:scale-95 ${
@@ -512,7 +561,19 @@ const PoseEngine = () => {
           >
             {isPredicting ? "DEACTIVATE MONITORING" : "INITIALIZE POSE ENGINE"}
           </button>
-        )}
+        )} */}
+        
+          <button
+            onClick={() => isPredicting ? handleStop() : handleStart()}
+            className={`mt-6 w-full p-4 rounded-lg font-bold transition-all transform active:scale-95 ${
+              isPredicting
+                ? "bg-red-900 hover:bg-red-800"
+                : "bg-blue-700 hover:bg-blue-600"
+            }`}
+          >
+            {isPredicting ? "DEACTIVATE MONITORING" : "INITIALIZE POSE ENGINE"}
+          </button>
+       
 
       </div>
     </div>
