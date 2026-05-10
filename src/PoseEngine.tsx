@@ -291,7 +291,7 @@ const PoseEngine = () => {
       PoseLandmarker.createFromOptions(vision, {
         baseOptions: {
           modelAssetPath: "/pose_landmarker_full.task",
-          delegate: "GPU",
+          delegate: "CPU",
         },
         runningMode: "VIDEO",
         numPoses: 1,
