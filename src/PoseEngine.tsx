@@ -314,6 +314,11 @@ useEffect(() => {
 
   // ── 7. CAMERA CONTROLS ────────────────────────────────────────
  const handleStart = async () => {
+   console.log("handleStart called", {
+    stopSignal: stopSignalRef.current,
+    isPredicting: isPredictingRef.current,
+    modelReady: modelReadyRef.current,
+  });
   if (!stopSignalRef.current && isPredictingRef.current) return;
   stopSignalRef.current = false;
   frameBufferRef.current = [];
