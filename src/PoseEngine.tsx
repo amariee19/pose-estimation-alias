@@ -122,6 +122,7 @@ const PoseEngine = () => {
   const [wsStatus, setWsStatus] = useState<"connecting" | "connected" | "disconnected">("disconnected");
   const [recoveryCounter, setRecoveryCounter] = useState(0);
   const [fallDurationCounter, setFallDurationCounter] = useState(0);
+  const [modelLoading, setModelLoading] = useState(true);
 
   // ── REFS ─────────────────────────────────────────────────────
   const modelReadyRef = useRef(false);
@@ -304,6 +305,7 @@ useEffect(() => {
   ).then(p => {
     poseLandmarkerRef.current = p;
     modelReadyRef.current = true;
+    setModelLoading(false);
     console.log("PoseLandmarker ready.");
     // If camera was already started before model finished loading, start loop now
     if (isPredictingRef.current) {
@@ -577,17 +579,24 @@ useEffect(() => {
             {isPredicting ? "DEACTIVATE MONITORING" : "INITIALIZE POSE ENGINE"}
           </button>
         )} */}
-        
+        {modelLoading && (
+  <div className="text-yellow-400 text-xs text-center mt-2 animate-pulse">
+    ⏳ Loading pose model... please wait
+  </div>
+)}
           <button
-            onClick={() => isPredicting ? handleStop() : handleStart()}
-            className={`mt-6 w-full p-4 rounded-lg font-bold transition-all transform active:scale-95 ${
-              isPredicting
-                ? "bg-red-900 hover:bg-red-800"
-                : "bg-blue-700 hover:bg-blue-600"
-            }`}
-          >
-            {isPredicting ? "DEACTIVATE MONITORING" : "INITIALIZE POSE ENGINE"}
-          </button>
+  onClick={() => isPredicting ? handleStop() : handleStart()}
+  disabled={modelLoading}
+  className={`mt-6 w-full p-4 rounded-lg font-bold transition-all transform active:scale-95 ${
+    modelLoading
+      ? "bg-gray-700 cursor-not-allowed opacity-50"
+      : isPredicting
+      ? "bg-red-900 hover:bg-red-800"
+      : "bg-blue-700 hover:bg-blue-600"
+  }`}
+>
+  {modelLoading ? "LOADING MODEL..." : isPredicting ? "DEACTIVATE MONITORING" : "INITIALIZE POSE ENGINE"}
+</button>
        
 
       </div>
