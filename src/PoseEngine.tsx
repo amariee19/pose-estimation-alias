@@ -45,11 +45,11 @@ const FALL_THRESHOLD = 0.6;
 const RECOVERY_THRESHOLD = 0.35;
 const WS_URL = import.meta.env.VITE_WS_URL;
 
-// // ── I-SYNC BRIDGE ──────────────────────────────────────────────
-// // When loaded inside the I-Sync WebView, window.__isInsideISync is true.
-// // Use ReactNativeWebView.postMessage instead of WebSocket in that case.
-// const isInsideISync = (): boolean =>
-//   typeof window !== "undefined" && !!(window as any).__isInsideISync;
+// ── I-SYNC BRIDGE ──────────────────────────────────────────────
+// When loaded inside the I-Sync WebView, window.__isInsideISync is true.
+// Use ReactNativeWebView.postMessage instead of WebSocket in that case.
+const isInsideISync = (): boolean =>
+  typeof window !== "undefined" && !!(window as any).ReactNativeWebView;
 
 // const sendToISync = (type: string, confidence = 0, feature = "") => {
 //   if (!isInsideISync()) return;
@@ -124,6 +124,8 @@ const PoseEngine = () => {
   const [fallDurationCounter, setFallDurationCounter] = useState(0);
 
   // ── REFS ─────────────────────────────────────────────────────
+  const modelReadyRef = useRef(false);
+const isPredictingRef = useRef(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const poseLandmarkerRef = useRef<PoseLandmarker | null>(null);
@@ -146,7 +148,9 @@ const PoseEngine = () => {
   //   sendToISync("POSE_ENGINE_READY");
   //   handleStart();
   // }, []);
-
+useEffect(() => {
+  isPredictingRef.current = isPredicting;
+}, [isPredicting]);
   // ── 2. LISTEN FOR MESSAGES FROM I-SYNC ───────────────────────
   useEffect(() => {
     const handler = (e: MessageEvent) => {
@@ -181,6 +185,7 @@ const PoseEngine = () => {
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
   }, []);
+  
 
   // ── 3. TWILIO ALERT TIMER (fires after 12s — standalone mode only) ─
   useEffect(() => {
@@ -257,18 +262,18 @@ const PoseEngine = () => {
       };
 
       ws.onmessage = (e) => {
-        try {
-          const d = JSON.parse(e.data);
-          if (d.type === "FALL_DETECTED") {
-            console.log("Hardware fall alert received — starting vision check.");
-            setHardwareAlert(true);
-            setIsFalseAlarm(false);
-            if (!isPredicting) handleStart(); 
-          }
-        } catch (err) {
-          console.error("WebSocket message parse error:", err);
-        }
-      };
+  try {
+    const d = JSON.parse(e.data);
+    if (d.type === "FALL_DETECTED") {
+      console.log("Hardware fall alert received — starting vision check.");
+      setHardwareAlert(true);
+      setIsFalseAlarm(false);
+      if (!isPredictingRef.current) handleStart(); // use ref, not state
+    }
+  } catch (err) {
+    console.error("WebSocket message parse error:", err);
+  }
+};
 
       ws.onerror = (e) => console.error("WebSocket error:", e);
 
@@ -283,53 +288,64 @@ const PoseEngine = () => {
   }, []);
 
   // ── 6. MEDIAPIPE INITIALISATION ───────────────────────────────
-  useEffect(() => {
-    if (poseLandmarkerRef.current) return;
-    FilesetResolver.forVisionTasks(
-      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
-    ).then(vision =>
-      PoseLandmarker.createFromOptions(vision, {
-        baseOptions: {
-          modelAssetPath: "/pose_landmarker_full.task",
-          delegate: "CPU",
-        },
-        runningMode: "VIDEO",
-        numPoses: 1,
-      })
-    ).then(p => {
-      poseLandmarkerRef.current = p;
-      console.log("PoseLandmarker ready.");
-    });
-  }, []);
+ useEffect(() => {
+  if (poseLandmarkerRef.current) return;
+  FilesetResolver.forVisionTasks(
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+  ).then(vision =>
+    PoseLandmarker.createFromOptions(vision, {
+      baseOptions: {
+        modelAssetPath: "/pose_landmarker_full.task",
+        delegate: "CPU",
+      },
+      runningMode: "VIDEO",
+      numPoses: 1,
+    })
+  ).then(p => {
+    poseLandmarkerRef.current = p;
+    modelReadyRef.current = true;
+    console.log("PoseLandmarker ready.");
+    // If camera was already started before model finished loading, start loop now
+    if (isPredictingRef.current) {
+      requestAnimationFrame(() => predictFall());
+    }
+  });
+}, []);
 
   // ── 7. CAMERA CONTROLS ────────────────────────────────────────
-  const handleStart = async () => {
-    if (!stopSignalRef.current && isPredicting) return;
-    stopSignalRef.current = false;
-    frameBufferRef.current = [];
-    confidenceRef.current = 0;
-    targetSizeRef.current = MIN_BUFFER;
-    isyncAlertSentRef.current = false; // reset on every new session
-    // iSyncHandledRef.current = false;
+ const handleStart = async () => {
+  if (!stopSignalRef.current && isPredictingRef.current) return;
+  stopSignalRef.current = false;
+  frameBufferRef.current = [];
+  confidenceRef.current = 0;
+  targetSizeRef.current = MIN_BUFFER;
+  isyncAlertSentRef.current = false;
 
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.onloadeddata = () => {
-          videoRef.current!.play();
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    if (videoRef.current) {
+      videoRef.current.srcObject = stream;
+      videoRef.current.onloadeddata = () => {
+        videoRef.current!.play().then(() => {
           setIsPredicting(true);
-          predictFall();
-        };
-      }
-    } catch (err) {
-      console.error("Camera access error:", err);
+          isPredictingRef.current = true;
+          // Only start loop if model is already ready
+          // If not ready, the MediaPipe init above will start it
+          if (modelReadyRef.current) {
+            requestAnimationFrame(() => predictFall());
+          }
+        });
+      };
     }
-  };
+  } catch (err) {
+    console.error("Camera access error:", err);
+  }
+};
 
   const handleStop = () => {
     stopSignalRef.current = true;
     setIsPredicting(false);
+    isPredictingRef.current = false;
     setConfidence(0);
     setFallDetected(false);
     setIsFalseAlarm(false);
@@ -424,43 +440,37 @@ const PoseEngine = () => {
       // if (isFall && finalConf >= FALL_THRESHOLD && !iSyncHandledRef.current) {
       //   setFallDetected(true);
       //   setIsFalseAlarm(false);
+      
       if (isFall && finalConf >= FALL_THRESHOLD) {
-        setFallDetected(true);
-        setIsFalseAlarm(false);
+  setFallDetected(true);
+  setIsFalseAlarm(false);
 
-        // Notify your own WebSocket server
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({ type: "VISION_CONFIRMED" }));
-        }
+  // Find the highest-weighted feature that voted true in the last frame
+  const lastFrame = frameBufferRef.current.at(-1);
+  const topFeature = lastFrame
+    ? (Object.keys(FEATURE_WEIGHTS) as Array<keyof FrameVote>)
+        .filter(k => lastFrame[k])
+        .sort((a, b) => FEATURE_WEIGHTS[b] - FEATURE_WEIGHTS[a])[0] ?? ""
+    : "";
 
-        // ── I-SYNC ALERT ───────────────────────────────────────
-        // Fires once per fall (isyncAlertSentRef prevents re-firing
-        // on every frame of the 60fps loop while the fall is active).
-        // Resets automatically when the fall clears or monitoring stops.
-        if (!isyncAlertSentRef.current) {
-          isyncAlertSentRef.current = true;
-          sendIsyncFallAlert();
-        }
-        // ──────────────────────────────────────────────────────
+  if (!isyncAlertSentRef.current) {
+    isyncAlertSentRef.current = true;
 
-        // Find the highest-weighted feature that voted true in the last frame
-        const lastFrame = frameBufferRef.current.at(-1);
-        const topFeature = lastFrame
-          ? (Object.keys(FEATURE_WEIGHTS) as Array<keyof FrameVote>)
-              .filter(k => lastFrame[k])
-              .sort((a, b) => FEATURE_WEIGHTS[b] - FEATURE_WEIGHTS[a])[0] ?? ""
-          : "";
-
-        // if (isInsideISync()) {
-        //   // Inside I-Sync WebView — notify the app via the bridge
-        //   sendToISync("FALL_DETECTED", finalConf, topFeature);
-        // } else {
-        //   // Standalone mode — use WebSocket as before
-        //   if (wsRef.current?.readyState === WebSocket.OPEN) {
-        //     wsRef.current.send(JSON.stringify({ type: "VISION_CONFIRMED" }));
-        //   }
-        // }
+    // Send to React Native app via WebView bridge
+    if ((window as any).ReactNativeWebView) {
+      (window as any).ReactNativeWebView.postMessage(
+        JSON.stringify({ type: "FALL_DETECTED", confidence: finalConf, feature: topFeature })
+      );
+    } else {
+      // Standalone fallback — WebSocket + I-Sync server
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: "VISION_CONFIRMED" }));
       }
+      sendIsyncFallAlert();
+    }
+  }
+}
+
     }
 
     if (!stopSignalRef.current) {
