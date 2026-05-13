@@ -157,7 +157,11 @@ useEffect(() => {
     const handler = (e: MessageEvent) => {
       try {
         const msg = typeof e.data === "string" ? JSON.parse(e.data) : e.data;
-
+        if (msg.type === "HARDWARE_FALL_DETECTED") {
+          console.log("Hardware fall received — starting camera");
+          if (!isPredictingRef.current) handleStart();
+          return;
+        }
         if (msg.type === "APP_CONFIRMED") {
           // I-Sync countdown expired or user tapped Confirm — fall already handled by app
           // iSyncHandledRef.current = true;
