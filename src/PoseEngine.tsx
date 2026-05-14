@@ -140,11 +140,13 @@ const isPredictingRef = useRef(false);
   // Prevents the I-Sync alert firing on every frame once a fall is detected.
   // Resets when the fall clears so the next real fall sends a fresh alert.
   const isyncAlertSentRef = useRef(false);
+   console.log("isInsideISync:", !!(window as any).ReactNativeWebView);
 
   // const iSyncHandledRef = useRef(false); // tracks if I-Sync already handled this fall
 
   // ── 1. AUTO-START + READY HANDSHAKE (I-Sync only) ─────────────
   useEffect(() => {
+    console.log("Auto-start effect fired, isInsideISync:", isInsideISync());
   if (!isInsideISync()) return;
   (window as any).ReactNativeWebView?.postMessage(
     JSON.stringify({ type: "POSE_ENGINE_READY", confidence: 0, feature: "" })
