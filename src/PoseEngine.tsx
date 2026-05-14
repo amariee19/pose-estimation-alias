@@ -498,7 +498,7 @@ if (
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: "VISION_CONFIRMED" }));
       }
-      // sendIsyncFallAlert();
+      sendIsyncFallAlert();
     }
   }
 }
