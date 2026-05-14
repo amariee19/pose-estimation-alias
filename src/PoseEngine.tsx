@@ -238,6 +238,12 @@ useEffect(() => {
               setHardwareAlert(false);
               frameBufferRef.current = [];
               isyncAlertSentRef.current = false; // reset so next fall sends a fresh alert
+
+              // Tell the mobile app to cancel
+              if (wsRef.current?.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({ type: "FALL_CANCELLED" }));
+              }
+
               if (recoveryTimerRef.current) {
                 clearInterval(recoveryTimerRef.current);
                 recoveryTimerRef.current = null;
