@@ -144,11 +144,14 @@ const isPredictingRef = useRef(false);
   // const iSyncHandledRef = useRef(false); // tracks if I-Sync already handled this fall
 
   // ── 1. AUTO-START + READY HANDSHAKE (I-Sync only) ─────────────
-  // useEffect(() => {
-  //   if (!isInsideISync()) return;
-  //   sendToISync("POSE_ENGINE_READY");
-  //   handleStart();
-  // }, []);
+  useEffect(() => {
+  if (!isInsideISync()) return;
+  (window as any).ReactNativeWebView?.postMessage(
+    JSON.stringify({ type: "POSE_ENGINE_READY", confidence: 0, feature: "" })
+  );
+  handleStart();
+}, []);
+
 useEffect(() => {
   isPredictingRef.current = isPredicting;
 }, [isPredicting]);
@@ -194,7 +197,7 @@ useEffect(() => {
 
   // ── 3. TWILIO ALERT TIMER (fires after 12s — standalone mode only) ─
   useEffect(() => {
-    // if (isInsideISync()) return; // I-Sync handles its own SMS
+    if (isInsideISync()) return; // I-Sync handles its own SMS
     if (fallDetected && !isFalseAlarm) {
       if (!twilioTimerRef.current) {
         twilioTimerRef.current = setInterval(() => {
@@ -255,7 +258,7 @@ useEffect(() => {
 
   // ── 5. WEBSOCKET (standalone mode only — skipped inside I-Sync) ─
   useEffect(() => {
-    // if (isInsideISync()) return; // no WebSocket needed inside I-Sync
+    if (isInsideISync()) return; // no WebSocket needed inside I-Sync
     const connect = () => {
       setWsStatus("connecting");
       const ws = new WebSocket(WS_URL);
