@@ -459,19 +459,9 @@ useEffect(() => {
       confidenceRef.current = finalConf;
       setConfidence(finalConf);
 
-      // Cancel app countdown immediately if person stands up
-if (
-  fallDetected &&
-  finalConf < RECOVERY_THRESHOLD &&
-  isyncAlertSentRef.current
-) {
-  if (wsRef.current?.readyState === WebSocket.OPEN) {
-    wsRef.current.send(JSON.stringify({ type: "FALL_CANCELLED" }));
-  }
-  isyncAlertSentRef.current = false;
-  setFallDetected(false);
-  frameBufferRef.current = [];
-}
+      // if (isFall && finalConf >= FALL_THRESHOLD && !iSyncHandledRef.current) {
+      //   setFallDetected(true);
+      //   setIsFalseAlarm(false);
       
       if (isFall && finalConf >= FALL_THRESHOLD) {
   setFallDetected(true);
