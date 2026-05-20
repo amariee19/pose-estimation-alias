@@ -268,7 +268,15 @@ const PoseEngine = () => {
               isyncAlertSentRef.current = false; // reset so next fall sends a fresh alert
 
               // Tell the mobile app to cancel
-              if (wsRef.current?.readyState === WebSocket.OPEN) {
+              if ((window as any).ReactNativeWebView) {
+                (window as any).ReactNativeWebView.postMessage(
+                  JSON.stringify({
+                    type: "FALL_CANCELLED",
+                    confidence: 0,
+                    feature: "",
+                  }),
+                );
+              } else if (wsRef.current?.readyState === WebSocket.OPEN) {
                 wsRef.current.send(JSON.stringify({ type: "FALL_CANCELLED" }));
               }
 
