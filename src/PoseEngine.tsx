@@ -51,7 +51,7 @@ const sendIsyncFallAlert = () => {
 // ── CONFIGURATION ──────────────────────────────────────────────
 const MIN_BUFFER = 8;
 const MAX_BUFFER = 40;
-const FALL_THRESHOLD = 0.6;
+const FALL_THRESHOLD = 0.50; // Lowered from 0.6 to catch more real falls
 const RECOVERY_THRESHOLD = 0.35;
 const WS_URL = import.meta.env.VITE_WS_URL;
 
@@ -112,10 +112,10 @@ const buildFrameVote = (f: FallFeatures): FrameVote => ({
   torsoLegAngle:
     ((f.torsoLegAngle ?? 180) >= 70 && (f.torsoLegAngle ?? 180) <= 110) ||
     (f.torsoLegAngle ?? 180) < 30,
-  kneeAnkleDistance: f.kneeAnkleDistance < 0.25,
-  headFloorDistance: f.headFloorDistance < 0.35,
-  headAngle: f.headAngle < 45 || f.headAngle > 135,
-  noseAnkleDistance: f.noseAnkleDistance < 1.3,
+  kneeAnkleDistance: f.kneeAnkleDistance < 0.35, // Relaxed from 0.25 — knees don't need to be that bent
+  headFloorDistance: f.headFloorDistance < 0.45, // Relaxed from 0.35 — head doesn't need to be on ground
+  headAngle: f.headAngle < 60 || f.headAngle > 120, // Relaxed from 45/135 — real falls have varied angles
+  noseAnkleDistance: f.noseAnkleDistance < 1.5, // Relaxed from 1.3 — body can be more extended
   aspectRatio: f.aspectRatio > 1.2,
 });
 
