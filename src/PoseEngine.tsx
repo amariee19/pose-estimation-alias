@@ -52,7 +52,8 @@ const sendIsyncFallAlert = () => {
 const MIN_BUFFER = 8;
 const MAX_BUFFER = 40;
 const FALL_THRESHOLD = 0.50; // Lowered from 0.6 to catch more real falls
-const RECOVERY_THRESHOLD = 0.35;
+const RECOVERY_THRESHOLD = 0.25; // Much lower — only recover when confidence is VERY low
+const RECOVERY_TIME = 15; // Increased from 10s — need sustained low confidence
 const WS_URL = import.meta.env.VITE_WS_URL;
 
 // ── I-SYNC BRIDGE ──────────────────────────────────────────────
@@ -254,13 +255,13 @@ const PoseEngine = () => {
     }
   }, [fallDetected, isFalseAlarm]);
 
-  // ── 4. RECOVERY TIMER (clears fall after 10s of low confidence) ─
+  // ── 4. RECOVERY TIMER (clears fall after 15s of very low confidence) ─
   useEffect(() => {
     if (fallDetected && confidence < RECOVERY_THRESHOLD) {
       if (!recoveryTimerRef.current) {
         recoveryTimerRef.current = setInterval(() => {
           setRecoveryCounter((p) => {
-            if (p >= 9) {
+            if (p >= RECOVERY_TIME - 1) {
               setIsFalseAlarm(true);
               setFallDetected(false);
               setHardwareAlert(false);
@@ -520,7 +521,9 @@ const PoseEngine = () => {
       const { confidence: curConf, isFall } = evaluateBuffer(
         frameBufferRef.current,
       );
-      const finalConf = f.aspectRatio < 0.85 ? curConf * 0.3 : curConf;
+      // Only penalize aspect ratio if confidence is already low (filters noise)
+      // If confidence is high, it's a real fall—don't penalize horizontal positions
+      const finalConf = curConf > 0.45 ? curConf : (f.aspectRatio < 0.85 ? curConf * 0.3 : curConf);
       confidenceRef.current = finalConf;
       setConfidence(finalConf);
 
