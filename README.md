@@ -75,7 +75,9 @@ npm run dev
 ---
 ## 7. Demo
 
-[https://github.com/user-attachments/assets/ae8a69f7-4a1e-4098-bbee-f51ebc8c16c9](https://github.com/user-attachments/assets/ae8a69f7-4a1e-4098-bbee-f51ebc8c16c9)
+
+https://github.com/user-attachments/assets/79c4ff94-714e-4aa6-bc80-7dcd6042dd62
+
 
 
 
